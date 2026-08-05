@@ -8,5 +8,6 @@
 ruff==0.14.2
 mypy==1.18.2
 pytest==9.0.3
+pytest-asyncio==1.4.0
 pip-audit==2.9.0
 python-dotenv>=1.2.2,<2.0.0

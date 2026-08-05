@@ -80,26 +80,38 @@ Assert-PythonVersion -Version '3.11'
 Assert-PythonVersion -Version '3.13'
 
 # --- Root dev venv (Python 3.11) -------------------------------------------
-# Tooling only. The agents' runtime SDKs are deliberately NOT installed here:
-#   * the test suite is offline and imports only the pure config/tools modules;
-#   * `research-agent` runs locally inside its container, not in this venv;
-#   * on Windows/ARM64 there is no prebuilt `cryptography` wheel for cp311, so
-#     installing azure-identity here would trigger a Rust + OpenSSL source build.
+# Dev tooling plus the API's runtime dependencies, because the API test suite
+# imports `app.*` (and therefore pymongo, pydantic and azure-identity).
+#
+# The AGENTS' SDKs are deliberately still excluded: their tests cover only pure
+# config/tool modules, the two agents pin conflicting preview adapter versions,
+# and `research-agent` runs inside its container rather than in a host venv.
 $rootVenv = Join-Path $repoRoot '.venv'
 New-Venv -Version '3.11' -Path $rootVenv
 Install-Requirements -VenvPath $rootVenv -RequirementsFiles @(
     (Join-Path $repoRoot 'requirements-dev.txt')
+    (Join-Path $repoRoot 'backend\api\requirements.txt')
 )
 
 # --- Code-agent venv (Python 3.13, must live in the service directory) ------
-$triageVenv = Join-Path $repoRoot 'src\triage-agent\.venv'
+$triageVenv = Join-Path $repoRoot 'backend\agents\triage-agent\.venv'
 New-Venv -Version '3.13' -Path $triageVenv
 Install-Requirements -VenvPath $triageVenv -RequirementsFiles @(
-    (Join-Path $repoRoot 'src\triage-agent\requirements.txt')
+    (Join-Path $repoRoot 'backend\agents\triage-agent\requirements.txt')
+)
+
+# --- FastAPI service venv (Python 3.11) -------------------------------------
+# Separate from the root tooling venv so the service's runtime dependencies
+# never leak into lint/type/test runs, and so it can be rebuilt independently.
+$apiVenv = Join-Path $repoRoot 'backend\api\.venv'
+New-Venv -Version '3.11' -Path $apiVenv
+Install-Requirements -VenvPath $apiVenv -RequirementsFiles @(
+    (Join-Path $repoRoot 'backend\api\requirements.txt')
 )
 
 Write-Host ''
 Write-Host 'Bootstrap complete.' -ForegroundColor Green
-Write-Host '  Dev tooling / tests  : .\.venv\Scripts\Activate.ps1            (Python 3.11)'
-Write-Host '  Code agent (azd run) : .\src\triage-agent\.venv\Scripts\Activate.ps1  (Python 3.13)'
+Write-Host '  Dev tooling / tests  : .\.venv\Scripts\Activate.ps1                            (Python 3.11)'
+Write-Host '  FastAPI service      : .\backend\api\.venv\Scripts\Activate.ps1                (Python 3.11)'
+Write-Host '  Code agent (azd run) : .\backend\agents\triage-agent\.venv\Scripts\Activate.ps1 (Python 3.13)'
 Write-Host '  Container agent runs in Docker via `azd ai agent run research-agent`.'

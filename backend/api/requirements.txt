@@ -1,0 +1,24 @@
+# FastAPI service layer — Python 3.11.
+#
+# Runs locally for now (uvicorn). Bounded ranges: a lower bound for the API this
+# service uses, an upper bound at the next major so a breaking release cannot
+# reach the app unreviewed. Audit with `pip-audit` via scripts/check.ps1.
+
+fastapi>=0.141.1,<1.0.0
+uvicorn[standard]>=0.52.1,<1.0.0
+pydantic>=2.13.4,<3.0.0
+
+# Azure Cosmos DB for MongoDB (vCore) speaks the MongoDB wire protocol, so this
+# uses PyMongo — NOT azure-cosmos, which only talks to Cosmos DB for NoSQL.
+# 4.13+ provides the native AsyncMongoClient (Motor is deprecated).
+pymongo>=4.17.0,<5.0.0
+
+# Foundry hosted-agent invocation.
+azure-ai-projects>=2.4.0,<3.0.0
+azure-identity>=1.25.3,<2.0.0
+
+# Entra ID token validation. The `crypto` extra pulls in the RSA backend needed
+# to verify RS256 signatures against the tenant JWKS.
+pyjwt[crypto]>=2.13.0,<3.0.0
+
+python-dotenv>=1.2.2,<2.0.0

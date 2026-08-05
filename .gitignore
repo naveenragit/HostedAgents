@@ -1,15 +1,27 @@
 # ---------------------------------------------------------------------------
 # Secrets & local environment  (NEVER commit)
+#
+# Rules are unanchored, so they apply at every depth: backend/api/.env,
+# frontend/.env.local, and so on. Only the *.example templates are tracked.
+# Verify with:  git check-ignore -v backend/api/.env
 # ---------------------------------------------------------------------------
 .env
 .env.*
+*.env
 !.env.example
+!*.env.example
+
+# Local connection details and account identifiers.
+secrets/
+local.settings.json
+secrets.json
+appsettings.Development.json
 *.pem
 *.key
 *.pfx
 *.p12
-secrets.json
-local.settings.json
+*.pubxml
+*.publishsettings
 
 # ---------------------------------------------------------------------------
 # Azure Developer CLI / Foundry local state
@@ -74,6 +86,14 @@ pip-audit-report.json
 # ---------------------------------------------------------------------------
 *.zip
 *.tar.gz
+
+# ---------------------------------------------------------------------------
+# Node / frontend
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
 
 # ---------------------------------------------------------------------------
 # Editors / OS

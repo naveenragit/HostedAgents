@@ -1,25 +1,47 @@
 # Hosted Agents
 
-Two Microsoft Foundry **hosted agents** in a single `azd` project, each demonstrating a
-different deployment path.
+A three-tier application over Microsoft Foundry hosted agents:
 
-| Agent | Deployment | Runtime | Protocol | Framework |
-|-------|-----------|---------|----------|-----------|
-| [`research-agent`](src/research-agent) | **Container** — Dockerfile → ACR → agent version | Python **3.11** | `responses` | none — `azure-ai-agentserver-responses` adapter |
-| [`triage-agent`](src/triage-agent) | **Code** — source ZIP, Foundry builds it | `python_3_13` | `responses` | Microsoft Agent Framework |
+```
+frontend/            React + TypeScript (Vite) chat UI
+   │  same-origin /api  (dev-server proxy)
+   ▼
+backend/api/         FastAPI service layer — invokes agents, owns chat history
+   │                        │
+   │ Responses protocol     │ MONGODB-OIDC (keyless)
+   ▼                        ▼
+backend/agents/      Azure Cosmos DB for MongoDB (vCore)
+   research-agent  (container, Python 3.11)
+   triage-agent    (code, python_3_13)
+```
 
-Full design, rationale and step-by-step execution plan: **[docs/implementation-plan.md](docs/implementation-plan.md)**.
+Design, decisions and execution plan: **[docs/implementation-plan.md](docs/implementation-plan.md)**.
+
+| Component | Deployment | Runtime |
+|-----------|-----------|---------|
+| [frontend](frontend) | local dev (`npm run dev`) | Node 22 / React 19 |
+| [backend/api](backend/api) | local dev (`uvicorn`) | Python 3.11 |
+| [backend/agents/research-agent](backend/agents/research-agent) | **Container** → ACR → Foundry | Python 3.11 |
+| [backend/agents/triage-agent](backend/agents/triage-agent) | **Code** (ZIP) → Foundry builds | `python_3_13` |
 
 ---
 
-## Why two Python versions?
+## Two things worth knowing up front
 
-Foundry's code-deploy path accepts only `python_3_13` / `python_3_14`
-([docs](https://learn.microsoft.com/azure/foundry/agents/how-to/deploy-hosted-agent-code#supported-runtimes)).
-Python 3.11 is available only on the container path, where the Dockerfile owns the runtime.
+**1. The backend writes to the database, not the agents.** Agents stay stateless. Persistence lives
+in one place, so per-user scoping has a single audit point — and the agents don't need database RBAC
+on their per-agent Entra identities, which only exist *after* the first deploy and would otherwise
+force a deploy → assign-role → redeploy cycle.
 
-The whole repository is written to the **3.11 language level** (`ruff target-version = py311`,
-`mypy python_version = 3.11`) so no code can drift onto newer syntax.
+**2. Cosmos DB for MongoDB (vCore) is not Cosmos DB for NoSQL.** The cluster
+(`*.mongocluster.cosmos.azure.com`) speaks the MongoDB wire protocol, so the persistence layer uses
+**PyMongo**, not `azure-cosmos`. Authentication is keyless via `MONGODB-OIDC` with a
+`DefaultAzureCredential` token callback — and **without** `ALLOWED_HOSTS`, which PyMongo accepts
+only for the interactive `OIDC_HUMAN_CALLBACK` flow.
+
+Python 3.11 is used everywhere except `triage-agent`: Foundry's code-deploy path accepts only
+[`python_3_13` / `python_3_14`](https://learn.microsoft.com/azure/foundry/agents/how-to/deploy-hosted-agent-code#supported-runtimes).
+The whole repo is pinned to the **3.11 language level** in ruff and mypy so nothing drifts.
 
 ---
 
@@ -27,12 +49,10 @@ The whole repository is written to the **3.11 language level** (`ruff target-ver
 
 ### Prerequisites
 
-- Python **3.11** and **3.13** (`py -0p` to verify)
-- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.80+
-- [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) with the `azure.ai.agents` extension
-- **Foundry Project Manager** role on the target Foundry project
-- Docker Desktop — only for running `research-agent` locally. Deployment does not need it:
-  `remoteBuild: true` builds the image in ACR.
+- Python **3.11** and **3.13** (`py -0p`), Node **22+**
+- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.80+, signed in (`az login`)
+- Your Entra identity registered on the Mongo vCore cluster with read/write access
+- Docker Desktop — only to run `research-agent` locally
 
 ### 1. Bootstrap
 
@@ -40,130 +60,129 @@ The whole repository is written to the **3.11 language level** (`ruff target-ver
 .\scripts\bootstrap.ps1
 ```
 
-Creates two virtual environments:
+| Venv | Python | Purpose |
+|------|--------|---------|
+| `.venv` | 3.11 | Dev tooling + tests (imports the API under test) |
+| `backend/api/.venv` | 3.11 | The FastAPI service |
+| `backend/agents/triage-agent/.venv` | 3.13 | Matches the code-deploy runtime; `azd ai agent run` resolves the venv from the **service** directory |
 
-| Path | Python | Contents | Purpose |
-|------|--------|----------|---------|
-| `.venv` | 3.11 | tooling only | ruff, mypy, pytest, pip-audit |
-| `src/triage-agent/.venv` | 3.13 | `src/triage-agent/requirements.txt` | Matches the code-deploy runtime; `azd ai agent run` resolves the venv from the **service** directory |
+### 2. Configure
 
-The agents' runtime SDKs are deliberately absent from `.venv`: the test suite is offline and
-imports only the pure config/tools modules, and `research-agent` runs inside its container.
+```powershell
+Copy-Item backend\api\.env.example backend\api\.env
+Copy-Item frontend\.env.example    frontend\.env.local
+```
 
-`constraints-local.txt` is applied during bootstrap only. It pins `cryptography` to the newest
-release that ships a `win_arm64` wheel, so this repo bootstraps on Windows/ARM64 without a Rust +
-OpenSSL source build. It never reaches Foundry.
+Both are git-ignored. Fill in the Foundry endpoint and the Mongo connection string.
+There are **no passwords** in either file — auth is `DefaultAzureCredential` throughout.
 
-### 2. Quality gate
+Confirm nothing sensitive is tracked:
+
+```powershell
+git check-ignore -q backend\api\.env; $LASTEXITCODE   # 0 = ignored
+```
+
+### 3. Create the database
+
+```powershell
+.\scripts\init-database.ps1
+```
+
+Idempotent. Creates the database, both collections and their indexes by calling the same
+`ensure_schema()` the API runs at start-up, so provisioning cannot drift from the app.
+
+### 4. Run
+
+```powershell
+# terminal 1 — API on http://127.0.0.1:8000
+.\backend\api\.venv\Scripts\Activate.ps1
+cd backend\api
+uvicorn app.main:app --reload --port 8000
+```
+
+```powershell
+# terminal 2 — UI on http://localhost:5173
+cd frontend
+npm run dev
+```
+
+Interactive API docs: <http://127.0.0.1:8000/docs>.
+
+### 5. Quality gate
 
 ```powershell
 .\scripts\check.ps1
 ```
 
-Runs `ruff check`, `ruff format --check`, `mypy --strict` (once per agent — both have a top-level
-`main.py`), `pytest`, and `pip-audit --strict` (once per requirements file — the agents are
-independent deployment units with intentionally different adapter pins).
-
-### 3. Sign in
+`ruff check`, `ruff format --check`, `mypy --strict` (once per package — several have a top-level
+`main.py`), `pytest`, and `pip-audit --strict` once per requirements file.
 
 ```powershell
-az login
-azd auth login
+cd frontend; npm run typecheck; npm run lint
 ```
 
-> Run these yourself — they are interactive browser flows and are never automated by tooling here.
+---
 
-### 4. Bind to a Foundry project
+## API
 
-**New project:**
+All routes derive the user from the authenticated principal. **No route accepts a user id from the
+client** — that is what makes cross-user access impossible rather than merely discouraged.
 
-```powershell
-azd env new dev
-azd env set AZURE_SUBSCRIPTION_ID "<subscription-guid>"
-azd env set AZURE_LOCATION "northcentralus"
-azd provision --no-prompt
-```
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/health/live` | Liveness (no dependencies) |
+| `GET` | `/health/ready` | Readiness (pings the database) |
+| `GET` | `/api/agents` | Agents this API may address |
+| `POST` | `/api/conversations` | Start a conversation |
+| `GET` | `/api/conversations` | List the caller's conversations |
+| `GET` | `/api/conversations/{id}` | Fetch one |
+| `DELETE` | `/api/conversations/{id}` | Delete it and its messages |
+| `GET` | `/api/conversations/{id}/messages` | Full transcript |
+| `POST` | `/api/conversations/{id}/messages` | Send a turn, get the reply |
 
-**Existing project:**
+### Authentication
 
-```powershell
-azd env new dev
-azd env set AZURE_SUBSCRIPTION_ID "<subscription-guid>"
-azd env set AZURE_LOCATION "<region>"
-azd env set AZURE_AI_PROJECT_ENDPOINT "https://<account>.services.ai.azure.com/api/projects/<project>"
-azd env set AZURE_AI_PROJECT_ID "<project-arm-resource-id>"
-azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "<existing-deployment-name>"
-# skip azd provision
-```
+| `AUTH_MODE` | Behaviour |
+|-------------|-----------|
+| `dev` | Trusts the `x-dev-user-id` header. **Local workstation only** — the app refuses to start in this mode when Azure compute markers (`CONTAINER_APP_NAME`, `WEBSITE_INSTANCE_ID`, …) are present. |
+| `entra` | Validates an Entra ID bearer token against the tenant JWKS and uses its `oid` claim. |
 
-### 5. Run locally
-
-```powershell
-# code agent — activate the venv inside its service directory first
-.\src\triage-agent\.venv\Scripts\Activate.ps1
-azd ai agent run triage-agent --no-client
-# wait for "Running on http://0.0.0.0:8088", then in another shell:
-azd ai agent invoke --local "The export button does nothing in Safari for several customers."
-```
-
-```powershell
-# container agent — needs Docker Desktop running
-azd ai agent run research-agent --no-client
-azd ai agent invoke --local "What are the tradeoffs of remote vs local container builds?"
-```
-
-Both agents serve `POST /responses` and `GET /readiness` on **port 8088**.
-
-### 6. Deploy
-
-```powershell
-azd deploy research-agent --no-prompt
-azd deploy triage-agent   --no-prompt
-azd ai agent show --output json     # expect "status": "active"
-```
-
-Each deploy creates a new **immutable version**; the latest is active.
-
-### 7. Tear down
-
-```powershell
-azd down --purge
-```
+`oid` is the partition key because it is immutable and non-reassignable — unlike `sub`
+(unique per application) or `email` / `preferred_username` (mutable).
 
 ---
 
 ## Repository layout
 
 ```
-azure.yaml                     azd project: ai-project + both agent services
-pyproject.toml                 repo-wide tooling config (ruff, mypy, pytest)
-requirements-dev.txt           root venv tooling
-constraints-local.txt          local-host-only pip constraints (Windows/ARM64 wheel gap)
-docs/implementation-plan.md    design, decisions, execution plan, risks
-scripts/bootstrap.ps1          create venvs, install dependencies
-scripts/check.ps1              lint + types + tests + dependency audit
-src/research-agent/            container agent (Dockerfile, .dockerignore)
-src/triage-agent/              code agent (.agentignore)
-tests/                         offline unit tests — no Azure calls
+azure.yaml                       azd project — both agent services, existing Foundry project
+pyproject.toml                   repo-wide tooling (ruff, mypy, pytest)
+constraints-local.txt            local-host-only pip pins (Windows/ARM64 wheel gap)
+scripts/bootstrap.ps1            create venvs, install dependencies
+scripts/check.ps1                lint + types + tests + dependency audit
+scripts/init-database.ps1        create database, collections, indexes
+backend/api/app/
+  main.py                        app factory, lifespan, domain-error → HTTP mapping
+  config.py                      env parsing, eager validation, dev-auth guard
+  domain/models.py               API contract + document shape in one place
+  security/auth.py               Entra token validation → Principal
+  repositories/mongo.py          PyMongo + OIDC; every filter is user-scoped
+  services/agent_client.py       agent allow-list + Responses invocation
+  services/conversation_service.py  the single writer for chat history
+  api/routes/                    conversations, agents, health
+  cli/init_database.py           schema provisioning entry point
+backend/agents/                  the two hosted agents (self-contained)
+backend/tests/                   offline unit tests — no Azure, no network
+frontend/src/
+  api/client.ts                  typed fetch wrapper
+  hooks/useChat.ts               chat state, request cancellation
+  components/                    ConversationList, MessageList, MessageComposer, ErrorBanner
 ```
 
-Each agent follows the same internal shape:
-
-```
-main.py                composition root only — read config, build, run
-<pkg>/config.py        env parsing + eager validation, frozen dataclass
-<pkg>/instructions.py  system prompt as reviewable data
-<pkg>/handler.py       protocol handler          (research-agent)
-<pkg>/tools.py         pure functions as tools   (triage-agent)
-<pkg>/telemetry.py     PII-safe logging setup
-```
-
-> ⚠️ **Do not add a shared `src/common/` package.**
-> Code deploy zips **only** the service directory, and the Docker build context is
-> **only** the service directory. A sibling package would import fine locally and then
-> fail with `ModuleNotFoundError` in the sandbox. If shared logic becomes substantial,
-> publish it as a versioned wheel and add it to each agent's `requirements.txt`.
-> See [AD-1](docs/implementation-plan.md#ad-1--each-agent-is-fully-self-contained-no-shared-library-package).
+> ⚠️ **Do not add a shared package under `backend/agents/`.** Code deploy zips **only** the service
+> directory, and the Docker build context is **only** the service directory. A sibling package
+> imports fine locally then fails with `ModuleNotFoundError` in the sandbox. Publish a versioned
+> wheel instead.
 
 ---
 
@@ -171,20 +190,43 @@ main.py                composition root only — read config, build, run
 
 | Control | Implementation |
 |---------|----------------|
-| No secrets in source or images | Only `.env.example` is committed; `.env`, `.azure/` are git-ignored and excluded from both the Docker context and the deploy ZIP |
-| Keyless authentication | `DefaultAzureCredential` against the per-agent Entra identity Foundry provisions at deploy time — no API keys, no connection strings |
-| Secrets, when unavoidable | Foundry project connections, referenced as `${{connections.<name>.credentials.<field>}}` and resolved at sandbox start |
-| Non-root container | Dedicated `appuser` (UID 10001), `nologin` shell |
-| Minimal image | `python:3.11-slim`, multi-stage build, no compiler toolchain or pip cache in the final layer |
-| Bounded dependencies | Lower **and** upper bounds on every direct dependency; `pip-audit --strict` in the quality gate |
-| Fail-fast configuration | Missing or malformed env vars raise at start-up, not mid-request |
-| Input bounds | User input length-capped before reaching the model (`AGENT_MAX_INPUT_CHARS`, hard ceiling 32k chars) |
-| Prompt-injection posture | System instructions explicitly treat user-supplied content as untrusted data, not commands |
-| PII-safe logging | Logs record lengths, IDs and outcomes only; Azure SDK HTTP body logging stays off |
-| No conversation persistence by us | `store: False` — history is platform-managed |
-| Static analysis | `ruff` with `S` (bandit), `B`, `ASYNC`, `ANN`, plus `mypy --strict` |
+| No secrets in source | Only `*.env.example` committed; `.env*` git-ignored at any depth |
+| Keyless auth everywhere | `DefaultAzureCredential` for Foundry **and** the database (`MONGODB-OIDC`) |
+| Identity is never client-supplied | User comes from a validated token's `oid` claim, never a body or query field |
+| Structural per-user isolation | Every repository filter is built by `_scope(user_id, …)`; no query can omit `userId` |
+| Indistinguishable 404s | A conversation owned by someone else returns the same 404 as one that doesn't exist |
+| Agent allow-list | Clients can only reach agents named in `AGENT_NAMES` |
+| Dev-auth fail-closed | `AUTH_MODE=dev` refuses to start when Azure compute markers are present |
+| Explicit CORS | Origin allow-list only; an empty list never becomes `*` |
+| Input bounds | Length-capped in the model, again in the service, hard ceiling 32k chars |
+| Prompt-injection posture | System prompts treat user content as untrusted data, not instructions |
+| PII-safe logging | Lengths, ids and outcomes only; Azure SDK HTTP body logging stays off |
+| Error bodies leak nothing | Internal failures logged; clients get a generic message |
+| Non-root container | `appuser` (UID 10001), `nologin` shell, multi-stage build |
+| Bounded dependencies | Lower + upper bounds everywhere; `pip-audit --strict` in the gate |
+| Static analysis | `ruff` (`S` bandit, `BLE`, `B`, `ASYNC`, `ANN`) + `mypy --strict` with the pydantic plugin |
 
-Never commit a `.env` file. Verify with `git status` before every push.
+---
+
+## Deploying the agents
+
+The API and UI run locally for now. The agents deploy into the **existing** Foundry project:
+
+```powershell
+azd env new dev
+azd env set AZURE_SUBSCRIPTION_ID          "<subscription-guid>"
+azd env set AZURE_LOCATION                 "<region>"
+azd env set AZURE_AI_PROJECT_ENDPOINT      "https://foundry-pocs.services.ai.azure.com/api/projects/foundry-proj-pocs"
+azd env set AZURE_AI_PROJECT_ID            "<project-arm-resource-id>"
+azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "<existing-model-deployment-name>"
+
+azd deploy research-agent --no-prompt
+azd deploy triage-agent   --no-prompt
+azd ai agent show --output json      # expect "status": "active"
+```
+
+There is **no `azd provision`** — the project already exists and this repo does not own it.
+The deploying identity needs **Foundry Project Manager** at project scope.
 
 ---
 
@@ -192,12 +234,11 @@ Never commit a `.env` file. Verify with `git status` before every push.
 
 | Symptom | Cause / fix |
 |---------|-------------|
-| Agent deploys but never becomes healthy | Image is not `linux/amd64`. Keep `remoteBuild: true`; if building locally, use `docker build --platform linux/amd64 .` |
-| `session_not_ready` (424) on first invoke | Cold start. Retry after 15–30s. |
-| `could not connect` on `invoke --local` | The local server was not ready. Wait for the `Running on http://0.0.0.0:8088` line — never start it with `&`/`nohup`. |
-| `ModuleNotFoundError` in the sandbox only | Something outside the service directory was imported. See AD-1 above. |
-| Model 404 on first invoke | `AZURE_AI_MODEL_DEPLOYMENT_NAME` in the azd env disagrees with `azure.yaml`. The `deployments[]` block is the source of truth. |
-| `invalid character 'n' after object key:value pair` on provision | Someone ran `azd env set AI_PROJECT_DEPLOYMENTS`. Clear it and declare deployments in `azure.yaml` instead. |
-| `bootstrap.ps1` fails compiling `cryptography` (Rust/OpenSSL) | Windows/ARM64 wheel gap. Verify the pin in `constraints-local.txt` still points at a release with a `win_arm64` wheel: `pip download cryptography --only-binary=:all: --no-deps -d %TEMP%\cryptotest` |
-
-More: [Debug a hosted agent](https://learn.microsoft.com/azure/foundry/agents/how-to/debug-hosted-agent).
+| `ALLOWED_HOSTS is only valid with OIDC_HUMAN_CALLBACK` | Remove `ALLOWED_HOSTS` from `authMechanismProperties`; it applies only to the interactive flow |
+| Mongo auth fails with a valid `az login` | Your Entra identity isn't registered on the cluster. See [Entra ID auth for vCore](https://learn.microsoft.com/azure/documentdb/how-to-connect-role-based-access-control) |
+| `mongosh` / Compass can't connect with Entra ID | Expected — neither supports Cosmos vCore's OIDC flow. Use application code |
+| API exits with `Configuration error: ...` | A required env var is missing. Copy `.env.example` → `.env` |
+| `AUTH_MODE=dev is refused on Azure compute` | Working as intended. Use `AUTH_MODE=entra` |
+| Agent deploys but never becomes healthy | Image is not `linux/amd64`. Keep `remoteBuild: true` |
+| `session_not_ready` (424) on first invoke | Cold start. Retry after 15–30s |
+| `bootstrap.ps1` fails compiling `cryptography` | Windows/ARM64 wheel gap — see `constraints-local.txt` |

@@ -2,13 +2,14 @@
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-# This project is NOT a distributable package. Each agent under src/ is packaged
-# independently by the Foundry platform (container image or source ZIP). This file
-# exists only to centralise developer tooling configuration for the whole repo.
+# This project is NOT a distributable package. Each agent under backend/agents/ is
+# packaged independently by the Foundry platform (container image or source ZIP),
+# and backend/api is run directly by uvicorn. This file exists only to centralise
+# developer tooling configuration for the whole repo.
 [project]
 name = "hosted-agents-workspace"
 version = "0.1.0"
-description = "Microsoft Foundry hosted agents: container-deployed and code-deployed."
+description = "Microsoft Foundry hosted agents with a FastAPI service layer and React frontend."
 requires-python = ">=3.11"
 
 [tool.setuptools]
@@ -21,8 +22,8 @@ packages = []
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["src/research-agent", "src/triage-agent", "tests"]
-extend-exclude = [".venv", "packages"]
+src = ["backend/agents/research-agent", "backend/agents/triage-agent", "backend/api", "backend/tests"]
+extend-exclude = [".venv", "packages", "node_modules"]
 
 [tool.ruff.lint]
 select = [
@@ -31,6 +32,7 @@ select = [
     "F",      # pyflakes
     "I",      # isort
     "B",      # flake8-bugbear
+    "BLE",    # flake8-blind-except (broad `except` must be justified)
     "C4",     # flake8-comprehensions
     "UP",     # pyupgrade
     "S",      # flake8-bandit (security)
@@ -46,10 +48,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "ANN"]   # asserts and loose annotations are fine in tests
+"backend/tests/*" = ["S101", "ANN"]   # asserts and loose annotations are fine in tests
 
 [tool.ruff.lint.isort]
-known-first-party = ["research_agent", "triage_agent"]
+known-first-party = ["app", "research_agent", "triage_agent"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -60,12 +62,15 @@ docstring-code-format = true
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# The pydantic plugin synthesises model __init__ signatures, so it understands
+# `populate_by_name` (fields are constructible by Python name, not just alias).
+plugins = ["pydantic.mypy"]
 warn_unreachable = true
 warn_unused_ignores = true
 disallow_any_generics = true
 no_implicit_reexport = true
-mypy_path = ["src/research-agent", "src/triage-agent"]
-exclude = ['\.venv', 'packages']
+mypy_path = ["backend/agents/research-agent", "backend/agents/triage-agent", "backend/api"]
+exclude = ['\.venv', 'packages', 'node_modules']
 
 # The agent runtime SDKs are not installed in the root dev venv (see
 # scripts/bootstrap.ps1), and the preview packages ship incomplete stubs.
@@ -75,6 +80,8 @@ module = [
     "agent_framework_foundry_hosting.*",
     "azure.*",
     "dotenv.*",
+    "pymongo.*",
+    "jwt.*",
 ]
 ignore_missing_imports = true
 
@@ -83,7 +90,9 @@ ignore_missing_imports = true
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 minversion = "8.0"
-testpaths = ["tests"]
+testpaths = ["backend/tests"]
 addopts = "-ra --strict-markers --strict-config"
-pythonpath = ["src/research-agent", "src/triage-agent"]
+pythonpath = ["backend/agents/research-agent", "backend/agents/triage-agent", "backend/api"]
 filterwarnings = ["error::DeprecationWarning"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
