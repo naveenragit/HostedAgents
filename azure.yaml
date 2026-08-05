@@ -1,0 +1,110 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+#
+# Two Microsoft Foundry hosted agents sharing one Foundry project and one model
+# deployment, each using a different deployment path:
+#
+#   research-agent  -> CONTAINER deploy (Dockerfile -> ACR -> agent version), Python 3.11
+#   triage-agent    -> CODE deploy      (source ZIP, platform builds),        python_3_13
+#
+# See docs/implementation-plan.md for why the runtimes differ.
+
+name: hosted-agents
+
+requiredVersions:
+  extensions:
+    azure.ai.agents: ">=1.0.0-beta.7"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Foundry project + model deployment.
+  # This block is the SINGLE SOURCE OF TRUTH for model deployments.
+  # Never run `azd env set AI_PROJECT_DEPLOYMENTS ...` — it single-escapes the
+  # JSON and breaks the Bicep json() parse.
+  # ---------------------------------------------------------------------------
+  ai-project:
+    host: azure.ai.project
+    deployments:
+      - name: gpt-5.4-mini
+        model:
+          format: OpenAI
+          name: gpt-5.4-mini
+          version: "2026-03-17"
+        sku:
+          name: GlobalStandard
+          capacity: 10
+
+  # ---------------------------------------------------------------------------
+  # Agent 1 — CONTAINER deployment.
+  # No `codeConfiguration` block => azd takes the container path and builds the
+  # Dockerfile. `remoteBuild: true` makes ACR do the build, which guarantees a
+  # linux/amd64 image (the platform rejects arm64) regardless of the dev host.
+  # ---------------------------------------------------------------------------
+  research-agent:
+    host: azure.ai.agent
+    project: src/research-agent
+    language: python
+    kind: hosted
+    name: research-agent
+    description: >-
+      A research assistant that answers technical questions with concise, sourced
+      explanations and explicitly flags anything it is not confident about.
+    uses:
+      - ai-project
+    protocols:
+      - protocol: responses
+        version: 2.0.0
+    environmentVariables:
+      # Platform-injected FOUNDRY_* vars must NOT be declared here.
+      - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+        value: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+      - name: AGENT_LOG_LEVEL
+        value: INFO
+      - name: AGENT_MAX_INPUT_CHARS
+        value: "8000"
+    docker:
+      path: Dockerfile
+      remoteBuild: true
+    container:
+      resources:
+        cpu: "1"
+        memory: 2Gi
+
+  # ---------------------------------------------------------------------------
+  # Agent 2 — CODE deployment.
+  # `codeConfiguration` present => azd zips src/triage-agent (honouring
+  # .agentignore) and Foundry builds the runtime image server-side.
+  # `runtime` MUST be python_3_13 or python_3_14 — 3.11 is not a valid value.
+  # ---------------------------------------------------------------------------
+  triage-agent:
+    host: azure.ai.agent
+    project: src/triage-agent
+    language: python
+    kind: hosted
+    name: triage-agent
+    description: >-
+      A support-triage assistant that classifies an incoming customer issue by
+      severity and product area, and proposes the next action for the on-call
+      engineer.
+    uses:
+      - ai-project
+    codeConfiguration:
+      runtime: python_3_13
+      entryPoint: main.py
+      dependencyResolution: remote_build
+    protocols:
+      - protocol: responses
+        version: 2.0.0
+    environmentVariables:
+      - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+        value: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+      - name: AGENT_LOG_LEVEL
+        value: INFO
+      - name: AGENT_MAX_INPUT_CHARS
+        value: "8000"
+    container:
+      resources:
+        cpu: "1"
+        memory: 2Gi
+
+infra:
+  provider: microsoft.foundry

@@ -1,0 +1,18 @@
+# Keep the build context minimal so local secrets and caches can never enter a layer.
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.git/
+.gitignore
+Dockerfile
+.dockerignore
+*.md
+*.log
+packages/

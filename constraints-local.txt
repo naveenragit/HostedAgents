@@ -1,0 +1,23 @@
+# LOCAL DEVELOPMENT CONSTRAINTS — not used for deployment.
+#
+# Applied by scripts/bootstrap.ps1 (`pip install -c`) when creating the local
+# virtual environments. It never reaches Foundry: the container agent installs
+# src/research-agent/requirements.txt inside a linux/amd64 image, and the code
+# agent's dependencies are resolved server-side by `remote_build`.
+#
+# Why this exists
+# ---------------
+# This workstation is Windows on ARM64 (win_arm64). `cryptography` — pulled in
+# transitively by azure-identity -> msal — publishes win_arm64 wheels only
+# intermittently. 46.0.3 is the newest release that ships one; 46.0.7 and 50.x
+# are sdist-only for this platform, so pip falls back to compiling Rust +
+# OpenSSL from source, which fails without a full toolchain and vcpkg/OPENSSL_DIR.
+#
+# Pinning to the newest release that has a win_arm64 wheel keeps
+# `bootstrap.ps1` working on ARM64 hosts. On x86_64 Windows, Linux, and macOS
+# this constraint is harmless.
+#
+# Revisit once upstream resumes publishing win_arm64 wheels; verify with:
+#   pip download cryptography --only-binary=:all: --no-deps -d %TEMP%\cryptotest
+
+cryptography==46.0.3

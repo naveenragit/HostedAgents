@@ -1,0 +1,12 @@
+# Developer tooling for the root .venv (Python 3.11).
+# Agent runtime dependencies live in src/<agent>/requirements.txt and are
+# deliberately NOT installed here — each agent is packaged independently.
+#
+# pytest is held at a version with no known advisories; `scripts/check.ps1`
+# runs `pip-audit --strict` over this file, so a vulnerable pin fails the gate.
+
+ruff==0.14.2
+mypy==1.18.2
+pytest==9.0.3
+pip-audit==2.9.0
+python-dotenv>=1.2.2,<2.0.0

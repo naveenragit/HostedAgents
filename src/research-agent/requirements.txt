@@ -1,0 +1,13 @@
+# Research agent — CONTAINER deployment, Python 3.11.
+#
+# The agent-server protocol adapter is preview-only, so it is pinned exactly:
+# a floating range on a pre-release package is not reproducible. Stable
+# dependencies use a lower bound plus a next-major upper bound so an upstream
+# breaking change cannot silently reach production.
+#
+# Audit with `pip-audit` via scripts/check.ps1 before every deploy.
+
+azure-ai-agentserver-responses==2.0.0b1
+azure-ai-projects>=2.4.0,<3.0.0
+azure-identity>=1.25.3,<2.0.0
+python-dotenv>=1.2.2,<2.0.0

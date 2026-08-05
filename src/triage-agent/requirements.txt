@@ -1,0 +1,14 @@
+# Triage agent — CODE deployment, python_3_13 runtime.
+#
+# `dependencyResolution: remote_build` means Foundry installs these server-side
+# during provisioning, so no wheels are shipped in the ZIP.
+#
+# The Foundry hosting package is preview-only and pinned exactly; stable
+# packages use a lower bound plus a next-major upper bound.
+#
+# Audit with `pip-audit` via scripts/check.ps1 before every deploy.
+
+agent-framework-foundry>=1.10.4,<2.0.0
+agent-framework-foundry-hosting==1.0.0b260730
+azure-identity>=1.25.3,<2.0.0
+python-dotenv>=1.2.2,<2.0.0

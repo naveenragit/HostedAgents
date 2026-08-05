@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# This project is NOT a distributable package. Each agent under src/ is packaged
+# independently by the Foundry platform (container image or source ZIP). This file
+# exists only to centralise developer tooling configuration for the whole repo.
+[project]
+name = "hosted-agents-workspace"
+version = "0.1.0"
+description = "Microsoft Foundry hosted agents: container-deployed and code-deployed."
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = []
+
+# ---------------------------------------------------------------------------
+# Ruff — lint + format. Language level pinned to 3.11 so nothing in the
+# code-deployed agent (which runs on 3.13) drifts onto newer syntax.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src/research-agent", "src/triage-agent", "tests"]
+extend-exclude = [".venv", "packages"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "S",      # flake8-bandit (security)
+    "ASYNC",  # flake8-async
+    "T20",    # flake8-print (no stray print in library code)
+    "RUF",    # ruff-specific
+    "SIM",    # flake8-simplify
+    "PTH",    # use pathlib
+    "ANN",    # type annotations required
+]
+ignore = [
+    "ANN401",  # allow typing.Any where the SDK genuinely returns Any
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "ANN"]   # asserts and loose annotations are fine in tests
+
+[tool.ruff.lint.isort]
+known-first-party = ["research_agent", "triage_agent"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# mypy — strict typing, 3.11 language level.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+disallow_any_generics = true
+no_implicit_reexport = true
+mypy_path = ["src/research-agent", "src/triage-agent"]
+exclude = ['\.venv', 'packages']
+
+# The agent runtime SDKs are not installed in the root dev venv (see
+# scripts/bootstrap.ps1), and the preview packages ship incomplete stubs.
+[[tool.mypy.overrides]]
+module = [
+    "agent_framework.*",
+    "agent_framework_foundry_hosting.*",
+    "azure.*",
+    "dotenv.*",
+]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+pythonpath = ["src/research-agent", "src/triage-agent"]
+filterwarnings = ["error::DeprecationWarning"]
