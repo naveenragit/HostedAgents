@@ -49,7 +49,10 @@ Read it before making structural changes.
 8. **`azure.yaml` is hand-maintained** and targets an **existing** Foundry project — there is
    deliberately no `ai-project` service and no `azd provision`. Do not re-run
    `azd ai agent init` against it; init is not idempotent and silently creates `<service>-2`.
-9. **Never declare `FOUNDRY_*` environment variables** in `azure.yaml` — the platform injects them.
+9. **`FOUNDRY_*` and `AGENT_*` are both reserved environment-variable prefixes.** Never declare
+   either in `azure.yaml`. The container path rejects the whole deployment with
+   `ValidationError: ... is reserved for platform use ... per container-image-spec`.
+   This repo's agent settings use the `APP_*` prefix for exactly that reason.
 10. **Container images must be `linux/amd64`.** Keep `docker.remoteBuild: true`. Local builds on
     this ARM64 host require `--platform linux/amd64`.
 

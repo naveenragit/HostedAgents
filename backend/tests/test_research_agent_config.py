@@ -49,7 +49,7 @@ def test_model_name_falls_back_to_foundry_model_name(clean_env: pytest.MonkeyPat
 
 def test_max_input_chars_is_capped_at_the_ceiling(clean_env: pytest.MonkeyPatch) -> None:
     _set_required(clean_env)
-    clean_env.setenv("AGENT_MAX_INPUT_CHARS", "999999")
+    clean_env.setenv("APP_MAX_INPUT_CHARS", "999999")
 
     assert AgentConfig.from_env().max_input_chars == 32_000
 
@@ -57,7 +57,7 @@ def test_max_input_chars_is_capped_at_the_ceiling(clean_env: pytest.MonkeyPatch)
 @pytest.mark.parametrize("value", ["0", "-1", "abc"])
 def test_invalid_max_input_chars_is_rejected(clean_env: pytest.MonkeyPatch, value: str) -> None:
     _set_required(clean_env)
-    clean_env.setenv("AGENT_MAX_INPUT_CHARS", value)
+    clean_env.setenv("APP_MAX_INPUT_CHARS", value)
 
     with pytest.raises(ConfigError):
         AgentConfig.from_env()

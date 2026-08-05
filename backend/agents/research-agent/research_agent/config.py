@@ -45,7 +45,7 @@ class AgentConfig:
         return cls(
             project_endpoint=project_endpoint,
             model_deployment_name=model_deployment_name,
-            log_level=os.environ.get("AGENT_LOG_LEVEL", "INFO").upper(),
+            log_level=os.environ.get("APP_LOG_LEVEL", "INFO").upper(),
             max_input_chars=_read_max_input_chars(),
         )
 
@@ -67,16 +67,16 @@ def _require(name: str, *, fallback_name: str | None = None) -> str:
 
 
 def _read_max_input_chars() -> int:
-    raw = os.environ.get("AGENT_MAX_INPUT_CHARS", "").strip()
+    raw = os.environ.get("APP_MAX_INPUT_CHARS", "").strip()
     if not raw:
         return _DEFAULT_MAX_INPUT_CHARS
 
     try:
         value = int(raw)
     except ValueError as exc:
-        raise ConfigError(f"AGENT_MAX_INPUT_CHARS must be an integer, got {raw!r}.") from exc
+        raise ConfigError(f"APP_MAX_INPUT_CHARS must be an integer, got {raw!r}.") from exc
 
     if value <= 0:
-        raise ConfigError("AGENT_MAX_INPUT_CHARS must be greater than zero.")
+        raise ConfigError("APP_MAX_INPUT_CHARS must be greater than zero.")
 
     return min(value, _MAX_INPUT_CHARS_CEILING)

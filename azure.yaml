@@ -53,9 +53,9 @@ services:
       # Platform-injected FOUNDRY_* vars must NOT be declared here.
       - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
         value: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
-      - name: AGENT_LOG_LEVEL
+      - name: APP_LOG_LEVEL
         value: INFO
-      - name: AGENT_MAX_INPUT_CHARS
+      - name: APP_MAX_INPUT_CHARS
         value: "8000"
     docker:
       path: Dockerfile
@@ -91,9 +91,9 @@ services:
     environmentVariables:
       - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
         value: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
-      - name: AGENT_LOG_LEVEL
+      - name: APP_LOG_LEVEL
         value: INFO
-      - name: AGENT_MAX_INPUT_CHARS
+      - name: APP_MAX_INPUT_CHARS
         value: "8000"
     container:
       resources:
