@@ -20,4 +20,4 @@
 # Revisit once upstream resumes publishing win_arm64 wheels; verify with:
 #   pip download cryptography --only-binary=:all: --no-deps -d %TEMP%\cryptotest
 
-cryptography==46.0.3
+cryptography==50.0.0
