@@ -36,6 +36,8 @@ def main() -> int:
         extra={
             "model_deployment": config.model_deployment_name,
             "max_input_chars": config.max_input_chars,
+            "max_output_tokens": config.max_output_tokens,
+            "request_timeout_seconds": config.request_timeout_seconds,
         },
     )
 

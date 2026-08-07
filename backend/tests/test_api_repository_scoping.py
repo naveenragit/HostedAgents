@@ -7,15 +7,26 @@ mapping directly, with a fake collection — no database, no network.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from app.domain.models import Conversation, Message, Role
+from app.domain.models import Conversation, ConversationState, Message, Role
 from app.repositories.mongo import ConversationRepository, _from_document, _scope, _to_document
 
 USER = "user-alpha"
 OTHER_USER = "user-beta"
+
+
+def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
+    for key, expected in query.items():
+        actual = document.get(key)
+        if isinstance(expected, dict) and "$ne" in expected:
+            if actual == expected["$ne"]:
+                return False
+        elif actual != expected:
+            return False
+    return True
 
 
 class FakeCursor:
@@ -45,37 +56,56 @@ class FakeCollection:
         self.documents = documents or []
         self.filters: list[dict[str, Any]] = []
 
-    async def insert_one(self, document: dict[str, Any]) -> None:
+    async def insert_one(self, document: dict[str, Any], **_kwargs: Any) -> None:
         self.documents.append(document)
 
-    async def find_one(self, query: dict[str, Any]) -> dict[str, Any] | None:
+    async def find_one(
+        self,
+        query: dict[str, Any],
+        **_kwargs: Any,
+    ) -> dict[str, Any] | None:
         self.filters.append(query)
-        return next(
-            (d for d in self.documents if all(d.get(k) == v for k, v in query.items())),
-            None,
-        )
+        return next((document for document in self.documents if _matches(document, query)), None)
 
     def find(self, query: dict[str, Any]) -> FakeCursor:
         self.filters.append(query)
-        return FakeCursor(
-            [d for d in self.documents if all(d.get(k) == v for k, v in query.items())]
-        )
+        return FakeCursor([document for document in self.documents if _matches(document, query)])
 
-    async def delete_one(self, query: dict[str, Any]) -> Any:
+    async def delete_one(self, query: dict[str, Any], **_kwargs: Any) -> Any:
         self.filters.append(query)
-        matched = [d for d in self.documents if all(d.get(k) == v for k, v in query.items())]
-        for d in matched:
-            self.documents.remove(d)
+        matched = [document for document in self.documents if _matches(document, query)]
+        for document in matched:
+            self.documents.remove(document)
         return type("Result", (), {"deleted_count": len(matched)})()
 
-    async def delete_many(self, query: dict[str, Any]) -> Any:
-        return await self.delete_one(query)
+    async def delete_many(self, query: dict[str, Any], **kwargs: Any) -> Any:
+        return await self.delete_one(query, **kwargs)
 
     async def replace_one(self, query: dict[str, Any], document: dict[str, Any], **_: Any) -> None:
         self.filters.append(query)
         self.documents = [
             document if all(d.get(k) == v for k, v in query.items()) else d for d in self.documents
         ]
+
+
+class DirectTransactions:
+    """Runs transaction callbacks directly; collection fakes provide atomic test state."""
+
+    async def run(self, operation: Any) -> Any:
+        return await operation(None)
+
+
+def _repository(
+    conversations: FakeCollection | None = None,
+    messages: FakeCollection | None = None,
+    turns: FakeCollection | None = None,
+) -> ConversationRepository:
+    return ConversationRepository(
+        cast(Any, conversations or FakeCollection()),
+        cast(Any, messages or FakeCollection()),
+        cast(Any, turns or FakeCollection()),
+        DirectTransactions(),
+    )
 
 
 def _conversation(user_id: str = USER) -> Conversation:
@@ -93,6 +123,13 @@ def test_scope_always_includes_user_id() -> None:
 
 def test_scope_merges_extra_criteria() -> None:
     assert _scope(USER, {"_id": "abc"}) == {"userId": USER, "_id": "abc"}
+
+
+def test_scope_extra_cannot_override_user_id() -> None:
+    assert _scope(USER, {"userId": OTHER_USER, "_id": "abc"}) == {
+        "userId": USER,
+        "_id": "abc",
+    }
 
 
 def test_scope_cannot_be_used_without_a_user() -> None:
@@ -132,18 +169,24 @@ def test_document_mapping_round_trips() -> None:
 @pytest.mark.asyncio
 async def test_get_conversation_scopes_query_to_the_caller() -> None:
     conversations = FakeCollection()
-    repository = ConversationRepository(conversations, FakeCollection())  # type: ignore[arg-type]
+    repository = _repository(conversations=conversations)
 
     await repository.get_conversation(USER, "conversation-1")
 
-    assert conversations.filters == [{"userId": USER, "_id": "conversation-1"}]
+    assert conversations.filters == [
+        {
+            "userId": USER,
+            "_id": "conversation-1",
+            "state": {"$ne": "deleting"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
 async def test_another_users_conversation_is_not_returned() -> None:
     owned = _to_document(_conversation(OTHER_USER))
     conversations = FakeCollection([owned])
-    repository = ConversationRepository(conversations, FakeCollection())  # type: ignore[arg-type]
+    repository = _repository(conversations=conversations)
 
     result = await repository.get_conversation(USER, owned["_id"])
 
@@ -155,17 +198,33 @@ async def test_list_conversations_is_scoped() -> None:
     mine = _to_document(_conversation(USER))
     theirs = _to_document(_conversation(OTHER_USER))
     conversations = FakeCollection([mine, theirs])
-    repository = ConversationRepository(conversations, FakeCollection())  # type: ignore[arg-type]
+    repository = _repository(conversations=conversations)
 
-    results = await repository.list_conversations(USER)
+    page = await repository.list_conversations(USER)
 
-    assert [c.id for c in results] == [mine["_id"]]
+    assert [conversation.id for conversation in page.items] == [mine["_id"]]
+    assert page.next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_deleting_conversations_are_hidden_from_get_and_list() -> None:
+    deleting = _to_document(
+        _conversation(USER).model_copy(update={"state": ConversationState.DELETING})
+    )
+    conversations = FakeCollection([deleting])
+    repository = _repository(conversations=conversations)
+
+    result = await repository.get_conversation(USER, deleting["_id"])
+    page = await repository.list_conversations(USER)
+
+    assert result is None
+    assert page.items == []
 
 
 @pytest.mark.asyncio
 async def test_list_messages_is_scoped_to_user_and_conversation() -> None:
     messages = FakeCollection()
-    repository = ConversationRepository(FakeCollection(), messages)  # type: ignore[arg-type]
+    repository = _repository(messages=messages)
 
     await repository.list_messages(USER, "conversation-1")
 
@@ -176,7 +235,7 @@ async def test_list_messages_is_scoped_to_user_and_conversation() -> None:
 async def test_delete_returns_false_for_another_users_conversation() -> None:
     theirs = _to_document(_conversation(OTHER_USER))
     conversations = FakeCollection([theirs])
-    repository = ConversationRepository(conversations, FakeCollection())  # type: ignore[arg-type]
+    repository = _repository(conversations=conversations)
 
     assert await repository.delete_conversation(USER, theirs["_id"]) is False
     # The other user's document survives.
@@ -186,7 +245,7 @@ async def test_delete_returns_false_for_another_users_conversation() -> None:
 @pytest.mark.asyncio
 async def test_add_message_persists_scoped_document() -> None:
     messages = FakeCollection()
-    repository = ConversationRepository(FakeCollection(), messages)  # type: ignore[arg-type]
+    repository = _repository(messages=messages)
     message = Message(
         user_id=USER,
         conversation_id="conversation-1",

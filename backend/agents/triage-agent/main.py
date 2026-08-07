@@ -14,14 +14,14 @@ import logging
 import sys
 
 from agent_framework import Agent
-from agent_framework.foundry import FoundryChatClient
 from agent_framework_foundry_hosting import ResponsesHostServer
-from azure.identity import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential
 from dotenv import load_dotenv
 
+from triage_agent.client import ManagedFoundryChatClient
 from triage_agent.config import AgentConfig, ConfigError
 from triage_agent.instructions import SYSTEM_INSTRUCTIONS
-from triage_agent.tools import classify_severity, identify_area, route_to_team
+from triage_agent.middleware import TriageBoundaryMiddleware
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s %(message)s"
 
@@ -43,19 +43,23 @@ def build_agent(config: AgentConfig) -> Agent:
     """Construct the Agent Framework agent from validated configuration."""
     # Keyless auth: the platform-provisioned per-agent Entra identity in Foundry,
     # the signed-in developer locally. No API keys anywhere.
-    client = FoundryChatClient(
+    credential = DefaultAzureCredential()
+    client = ManagedFoundryChatClient(
         project_endpoint=config.project_endpoint,
         model=config.model_deployment_name,
-        credential=DefaultAzureCredential(),
+        credential=credential,
     )
 
     return Agent(
         client=client,
         instructions=SYSTEM_INSTRUCTIONS,
-        tools=[classify_severity, identify_area, route_to_team],
+        middleware=[TriageBoundaryMiddleware(config.max_input_chars)],
         # History is managed by the hosting platform, so the agent stores no
         # conversation content of its own.
-        default_options={"store": False},
+        default_options={
+            "store": False,
+            "max_tokens": config.max_output_tokens,
+        },
     )
 
 
@@ -75,6 +79,7 @@ def main() -> int:
         extra={
             "model_deployment": config.model_deployment_name,
             "max_input_chars": config.max_input_chars,
+            "max_output_tokens": config.max_output_tokens,
         },
     )
 

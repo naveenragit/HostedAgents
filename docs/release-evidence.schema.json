@@ -1,0 +1,275 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Hosted Agents private release evidence",
+  "description": "References private approvals and evaluation records without placing live environment identifiers in source control.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "evidenceCreatedAt",
+    "expiresAt",
+    "sourceCommit",
+    "releaseApproval",
+    "evaluationGate",
+    "agents"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "evidenceCreatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "releaseApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "approvalReference",
+        "approverReference",
+        "approvedAt"
+      ],
+      "properties": {
+        "status": {
+          "const": "approved"
+        },
+        "approvalReference": {
+          "$ref": "#/definitions/privateReference"
+        },
+        "approverReference": {
+          "$ref": "#/definitions/privateReference"
+        },
+        "approvedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "evaluationGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "definitionReference",
+        "version",
+        "thresholdApprovalReference",
+        "thresholdsDefinedAt"
+      ],
+      "properties": {
+        "definitionReference": {
+          "$ref": "#/definitions/privateReference"
+        },
+        "version": {
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "thresholdApprovalReference": {
+          "$ref": "#/definitions/privateReference"
+        },
+        "thresholdsDefinedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "agents": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/definitions/agentEvidence"
+      }
+    }
+  },
+  "definitions": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "privateReference": {
+      "type": "string",
+      "minLength": 8
+    },
+    "agentEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service",
+        "sourceCommit",
+        "agentVersion",
+        "modelDeployment",
+        "evaluation"
+      ],
+      "properties": {
+        "service": {
+          "enum": [
+            "research-agent",
+            "triage-agent"
+          ]
+        },
+        "sourceCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{40}$"
+        },
+        "agentVersion": {
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "modelDeployment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "deploymentReference",
+            "modelName",
+            "modelVersion",
+            "raiPolicy"
+          ],
+          "properties": {
+            "deploymentReference": {
+              "$ref": "#/definitions/privateReference"
+            },
+            "modelName": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "modelVersion": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "raiPolicy": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "policyReference",
+                "policyVersion",
+                "approvalReference",
+                "bindingEvidenceReference",
+                "bindingVerifiedAt"
+              ],
+              "properties": {
+                "policyReference": {
+                  "$ref": "#/definitions/privateReference"
+                },
+                "policyVersion": {
+                  "$ref": "#/definitions/nonEmptyString"
+                },
+                "approvalReference": {
+                  "$ref": "#/definitions/privateReference"
+                },
+                "bindingEvidenceReference": {
+                  "$ref": "#/definitions/privateReference"
+                },
+                "bindingVerifiedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          }
+        },
+        "evaluation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "agentVersion",
+            "suiteReference",
+            "suiteVersion",
+            "datasetVersion",
+            "runReference",
+            "status",
+            "startedAt",
+            "completedAt",
+            "overallPassed",
+            "safetyCoverage",
+            "metrics"
+          ],
+          "properties": {
+            "agentVersion": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "suiteReference": {
+              "$ref": "#/definitions/privateReference"
+            },
+            "suiteVersion": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "datasetVersion": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "runReference": {
+              "$ref": "#/definitions/privateReference"
+            },
+            "status": {
+              "const": "completed"
+            },
+            "startedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "completedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "overallPassed": {
+              "const": true
+            },
+            "safetyCoverage": {
+              "type": "array",
+              "minItems": 6,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "harmful-content",
+                  "prompt-injection",
+                  "data-exfiltration",
+                  "tool-misuse",
+                  "over-refusal",
+                  "escalation"
+                ]
+              }
+            },
+            "metrics": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "direction",
+                  "threshold",
+                  "observed",
+                  "passed"
+                ],
+                "properties": {
+                  "name": {
+                    "$ref": "#/definitions/nonEmptyString"
+                  },
+                  "direction": {
+                    "enum": [
+                      "at-least",
+                      "at-most"
+                    ]
+                  },
+                  "threshold": {
+                    "type": "number"
+                  },
+                  "observed": {
+                    "type": "number"
+                  },
+                  "passed": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

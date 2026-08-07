@@ -1,21 +1,20 @@
 # Hosted Agents
 
-A three-tier chat application over **Microsoft Foundry hosted agents**, with per-user conversation
-history in **Azure Cosmos DB for MongoDB (vCore)**.
+A three-tier chat application over **Microsoft Foundry hosted agents** that demonstrates two
+conversation-management strategies behind one API and UI.
 
 ```
-frontend/                 React 19 + TypeScript (Vite) chat UI
-    │  same-origin /api   (Vite dev-server proxy)
-    ▼
-backend/api/              FastAPI service layer
-    │                     · invokes the agents
-    │                     · the ONLY writer of chat history
-    │                          │
-    │ Responses protocol       │ MONGODB-OIDC (keyless)
-    ▼                          ▼
-backend/agents/           Azure Cosmos DB for MongoDB (vCore)
-    research-agent   container deploy, Python 3.11
-    triage-agent     code deploy,      python_3_13
+frontend/                    React 19 + TypeScript (Vite) chat UI
+  │ same-origin /api
+  ▼
+backend/api/                 FastAPI orchestration and user-scoped catalog
+  ├─ research-agent ────── Responses + conversation ID ──► Foundry Conversations
+  │                                                        owns research history
+  ├─ triage-agent ──────── Responses + store=false ───────► hosted agent
+  │
+  └─ MONGODB-OIDC ────────────────────────────────────────► Cosmos DB for MongoDB
+                               user/Foundry links, turn metadata,
+                               and triage history
 ```
 
 | Component | Deployment | Runtime | Framework |
@@ -32,25 +31,35 @@ Rules for anyone (or any AI agent) changing this code: **[AGENTS.md](AGENTS.md)*
 
 ## Current status
 
-Both agents are **deployed and live** in an existing Foundry project. The API and UI are **local
-only** — there is no hosting for them yet.
+This is a local proof of concept for an **existing** Foundry project, not a production deployment.
+The API intentionally has no application-user authentication. It accepts only direct loopback
+clients, refuses startup on recognized Azure compute, and uses one server-owned `poc-user` identity
+for database scoping. Vite and FastAPI must both remain bound to `127.0.0.1`.
 
-| Thing | State |
-|-------|-------|
-| `research-agent`, `triage-agent` | Deployed to Foundry project `foundry-proj-pocs`, status `active` |
-| Cosmos database `agentchat` | Created, with `conversations` + `messages` collections and indexes |
-| FastAPI service | Runs locally on `http://127.0.0.1:8000` |
-| React UI | Runs locally on `http://localhost:5173` |
-| Quality gate | Green — ruff, `mypy --strict` ×4, 67 tests, `pip-audit` ×4 |
+The POC retains the controls that matter for sharing code: keyless Azure service authentication,
+agent allow-listing, explicit transcript ownership, bounded role-preserving input for the custom
+path, durable idempotency fences, cursor pagination, generic errors, and content-free deletion
+tombstones. Add real caller authentication and authorization before any shared-network or deployed
+use.
+
+No `LICENSE` is currently present. Obtain owner/legal approval before publishing this repository;
+the code can be shared privately only under terms supplied by the repository owner.
 
 ---
 
 ## Three things worth knowing before you start
 
-**1. The backend writes to the database — the agents never do.**
-Agents are stateless. Persistence lives in one place, so per-user scoping has a single audit point.
-It also sidesteps a real trap: a hosted agent's Entra identity does not exist until *after* its
-first deploy, so agent-side database access would force a deploy → assign-role → redeploy cycle.
+**1. Conversation ownership is deliberately different for the two agents.**
+
+| Agent | Transcript owner | What Cosmos stores | Invocation |
+|---|---|---|---|
+| `research-agent` | **Foundry Conversations** | The user-scoped application conversation, its server-only `foundryConversationId`, counters, and idempotent turn/item references; no duplicate message content | The new user item plus `conversation=<foundryConversationId>`; the hosted handler reads Foundry history for inference |
+| `triage-agent` | **Cosmos DB for MongoDB** | The complete custom transcript and turn state | Bounded chronological history with `store=false` |
+
+The FastAPI layer chooses the strategy, enforces the `userId` scope, and coordinates deletion. The
+hosted agents never receive database credentials. This also avoids a real trap: a hosted agent's
+Entra identity does not exist until *after* its first deploy, so agent-side database access would
+force a deploy → assign-role → redeploy cycle.
 
 **2. Cosmos DB for MongoDB (vCore) is not Cosmos DB for NoSQL.**
 The cluster host is `*.mongocluster.cosmos.azure.com` and speaks the MongoDB wire protocol, so the
@@ -73,9 +82,9 @@ to the **3.11 language level** in ruff and mypy so nothing drifts onto newer syn
 | Tool | Version | Notes |
 |------|---------|-------|
 | Python | **3.11** *and* **3.13** | Verify with `py -0p`. Both are needed — see the venv table below. |
-| Node.js | **22+** | For the frontend. |
-| [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) | 2.80+ | `az login` before anything else. |
-| [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) | 1.28+ | Only needed to deploy agents. Requires the `azure.ai.agents` extension: `azd extension install azure.ai.agents` |
+| Node.js | **22 recommended** (`20.19+` supported) | For the frontend. Verify with `node --version`. |
+| [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) | 2.80+ | Resource discovery and the local `DefaultAzureCredential`. |
+| [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) | 1.28+ | Deploys the agents. It has a separate login and needs the `azure.ai.agents` extension. |
 | Docker Desktop | any | **Only** to run `research-agent` locally. Not needed to deploy — images build remotely in ACR. |
 
 ### Azure resources
@@ -87,7 +96,7 @@ create them (there is deliberately no `azd provision`).
 |----------|-----|-----------------|
 | Foundry project | Hosts the agents, serves the model | **Foundry Project Manager** at project scope |
 | Model deployment | The agents' LLM | Must already exist in the project |
-| Cosmos DB for MongoDB (vCore) cluster | Chat history | Your Entra identity registered on the cluster (see below) |
+| Cosmos DB for MongoDB (vCore) cluster | Conversation catalog, turn metadata, user/Foundry links, and triage history | Your Entra identity registered on the cluster (see below) |
 | Azure Container Registry | Only for the **container** agent | `AcrPush` for you, `AcrPull` for the Foundry identities |
 
 ### Finding your values
@@ -133,9 +142,31 @@ Full procedure: [Configure role-based access control for Azure DocumentDB](https
 
 ---
 
-## Setup
+## Get started and deploy
 
-### 1. Bootstrap the environments
+Follow these steps in order. The repository deploys the two hosted agents only; the unauthenticated
+FastAPI service and React UI intentionally remain local-only. Steps 1–3 are normally one-time setup
+for an Azure environment. Steps 4–7 configure and run the local application.
+
+### 1. Authenticate the CLIs
+
+Azure CLI and Azure Developer CLI keep separate login state. Sign in to both with the identity that
+has access to the existing Foundry project, Mongo cluster, and container registry:
+
+```powershell
+az login
+az account set --subscription "<subscription-guid>"
+az account show --query "{subscription:id, tenant:tenantId, user:user.name}" -o table
+
+azd auth login
+azd auth login --check-status
+azd extension install azure.ai.agents
+```
+
+The `az login` identity is also what the local API uses through `DefaultAzureCredential`. Do not
+replace either login with an API key, database password, or client secret.
+
+### 2. Bootstrap the environments
 
 ```powershell
 .\scripts\bootstrap.ps1
@@ -153,7 +184,49 @@ Creates three virtual environments. They are separate on purpose:
 release publishing a `win_arm64` wheel so this repo bootstraps on Windows/ARM64 without a Rust +
 OpenSSL source build. **It never reaches Azure.**
 
-### 2. Configure
+### 3. Deploy the hosted agents
+
+Configure an azd environment for the **existing** Foundry project. Use the values found in
+[Finding your values](#finding-your-values):
+
+```powershell
+azd env new dev --subscription "<subscription-guid>" --location "<region>"
+
+azd env set AZURE_AI_PROJECT_ENDPOINT      "https://<account>.services.ai.azure.com/api/projects/<project>"
+azd env set FOUNDRY_PROJECT_ENDPOINT       "https://<account>.services.ai.azure.com/api/projects/<project>"
+azd env set AZURE_AI_PROJECT_ID            "<project-arm-resource-id>"
+azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "<existing-model-deployment-name>"
+azd env set AZURE_TENANT_ID                "<tenant-guid>"
+azd env set AZURE_RESOURCE_GROUP           "<foundry-resource-group>"
+```
+
+Deploy the direct-code agent first. It needs no registry:
+
+```powershell
+azd deploy triage-agent --no-prompt
+```
+
+The container agent needs an existing ACR plus the RBAC described in
+[Container agent](#container-agent-needs-an-owner-managed-registry). After that one-time setup:
+
+```powershell
+azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "<acrname>.azurecr.io"
+azd env set AZURE_CONTAINER_REGISTRY_NAME     "<acrname>"
+azd deploy research-agent --no-prompt
+```
+
+Confirm that both agents report an active/deployed status before starting the local application:
+
+```powershell
+azd ai agent show triage-agent --output json
+azd ai agent show research-agent --output json
+```
+
+There is deliberately no `azd provision` or `azd up`: this repository consumes existing Azure
+resources and must not take ownership of their lifecycle. Each successful deploy creates a new,
+immutable agent version and makes the latest version active.
+
+### 4. Configure the local application
 
 ```powershell
 Copy-Item backend\api\.env.example backend\api\.env
@@ -166,28 +239,35 @@ Edit `backend\api\.env`:
 |----------|---------|-------|
 | `FOUNDRY_PROJECT_ENDPOINT` | `https://<account>.services.ai.azure.com/api/projects/<project>` | Required |
 | `AGENT_NAMES` | `research-agent,triage-agent` | Allow-list. A client can never reach an agent that is not listed. |
+| `FOUNDRY_CONVERSATION_AGENTS` | `research-agent` | Agents whose durable transcript is owned by Foundry. Must be a subset of `AGENT_NAMES`; omitted agents use Cosmos history. |
 | `MONGO_CONNECTION_STRING` | `mongodb+srv://<cluster>.mongocluster.cosmos.azure.com/?tls=true&authMechanism=MONGODB-OIDC&retrywrites=false&maxIdleTimeMS=120000` | Required. Contains **no password**. |
 | `MONGO_DATABASE` | `agentchat` | Created for you in step 3 |
-| `AUTH_MODE` | `dev` | `dev` trusts the `x-dev-user-id` header — local only. Use `entra` for real tokens. |
+| `API_POC_MODE` | `true` | Explicit opt-in. Refused on recognized Azure compute. |
+| `API_POC_USER_ID` | `poc-user` | Fixed server-owned persistence scope; clients cannot override it. |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Explicit allow-list; never becomes `*` |
 | `API_LOG_LEVEL` / `API_MAX_INPUT_CHARS` | `INFO` / `8000` | Optional |
 
-Both files are git-ignored. There are **no passwords in either** — authentication is
-`DefaultAzureCredential` throughout. Confirm nothing sensitive is tracked:
+Both files are git-ignored. There are **no passwords in either**. Azure service access uses
+`DefaultAzureCredential`; API callers are restricted to loopback rather than authenticated.
+Confirm nothing sensitive is tracked:
 
 ```powershell
 git check-ignore -q backend\api\.env; $LASTEXITCODE    # 0 = ignored, good
 ```
 
-### 3. Create the database
+### 5. Create the database
 
 ```powershell
 .\scripts\init-database.ps1
 ```
 
-Idempotent. Creates the database, both collections and their indexes by calling the same
+Idempotent. Creates the database, all three collections (`conversations`, `messages`, and `turns`)
+and their indexes by calling the same
 `ensure_schema()` the API runs at start-up, so provisioning cannot drift from the application.
-This is also the fastest way to prove your Entra identity works against the cluster.
+The `messages` collection contains only Cosmos-managed transcripts; research message content stays
+in Foundry. The `turns` collection keeps idempotency state and Foundry item references. The schema
+also includes a TTL index for content-free deletion tombstones. This is the fastest way to prove
+your Entra identity works against the cluster.
 
 Expected output:
 
@@ -195,16 +275,16 @@ Expected output:
 Connecting with your az login identity (MONGODB-OIDC)...
 INFO     api.init connected
 INFO     api.init database ready
-Database 'agentchat' is ready. Collections: conversations, messages
+Database 'agentchat' is ready. Collections: conversations, messages, turns
 ```
 
-### 4. Run it
+### 6. Run it
 
 ```powershell
 # Terminal 1 — API on http://127.0.0.1:8000
 cd backend\api
 .\.venv\Scripts\Activate.ps1
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 ```powershell
@@ -218,16 +298,19 @@ Open <http://localhost:5173>. Interactive API docs: <http://127.0.0.1:8000/docs>
 The Vite dev server proxies `/api` and `/health` to the API, so the browser stays on one origin and
 CORS behaves the same as it would behind a reverse proxy.
 
-### 5. Verify end to end
+### 7. Verify end to end
 
 ```powershell
 .\scripts\smoke-test.ps1                            # triage-agent
 .\scripts\smoke-test.ps1 -AgentName research-agent  # container agent
 ```
 
-Checks health, lists agents, creates a conversation, sends a real turn to the deployed agent, reads
-the transcript back from Cosmos, and **asserts per-user isolation** (a second user must see nothing
-and get a 404 on a direct fetch). This calls the live model, so it costs tokens.
+Checks health, lists agents, creates a conversation, verifies the expected transcript owner, sends a
+real turn to the deployed agent, reads history back from that owner, verifies pagination and replay
+idempotency, and deletes its test conversation in a `finally` block. For research, deletion removes
+the Foundry conversation before purging its Cosmos link. The API and UI must already be running, and
+both named agents must already be deployed. The script refuses non-loopback API URLs. This calls the
+live model, so it costs tokens.
 
 ---
 
@@ -245,17 +328,12 @@ Runs, in order:
 |------|------|
 | `ruff check` / `ruff format --check` | Security (`S`), blind-except (`BLE`), bugbear, async, annotations |
 | `mypy --strict` × 4 | Once per package — several have a top-level `main.py`, so one run over `backend` collides on duplicate module names |
-| `pytest` | 67 offline tests. No Azure, no network. |
+| `pytest` | Offline tests. No Azure login, deployment, or live model call. |
 | `pip-audit --strict` × 4 | Once per requirements file — the agents pin different preview adapter versions and would false-conflict if resolved together |
-
-Frontend:
-
-```powershell
-cd frontend
-npm run typecheck
-npm run lint
-npm run build
-```
+| `npm run test --if-present` | Runs the Vitest frontend suite |
+| `npm run typecheck`, `lint`, `build` | TypeScript and production-bundle checks |
+| `npm audit --omit=dev --audit-level=high` | Fails high/critical production dependency advisories |
+| `npm audit --audit-level=high` | Fails high/critical advisories in the complete frontend dependency graph |
 
 ### Repository layout
 
@@ -268,19 +346,22 @@ constraints-local.txt               local-host-only pip pins (Windows/ARM64 whee
 scripts/bootstrap.ps1               create the three venvs, install dependencies
 scripts/check.ps1                   lint + types + tests + dependency audit
 scripts/init-database.ps1           create database, collections, indexes
-scripts/smoke-test.ps1              end-to-end test incl. per-user isolation
+scripts/smoke-test.ps1              loopback-only end-to-end agent/persistence test
+scripts/verify-release-evidence.ps1 validate private RAI/evaluation evidence for a commit
+scripts/verify-release-artifact.ps1 build and inspect the tracked-file ZIP
+scripts/public-release.ps1          fail-closed public artifact gate
 
 backend/api/
   .env.example                      template — copy to .env
   requirements.txt
   app/main.py                       app factory, lifespan, domain-error → HTTP mapping
-  app/config.py                     env parsing, eager validation, dev-auth guard
+  app/config.py                     env parsing, eager validation, POC deployment guard
   app/dependencies.py               DI wiring for shared clients
   app/domain/models.py              API contract + document shape in one place
-  app/security/auth.py              Entra token validation → Principal
+  app/security/auth.py              loopback boundary → fixed POC Principal
   app/repositories/mongo.py         PyMongo + OIDC; every filter is user-scoped
-  app/services/agent_client.py      agent allow-list + Responses invocation
-  app/services/conversation_service.py   the single writer of chat history
+  app/services/agent_client.py      agent allow-list + Foundry conversation operations
+  app/services/conversation_service.py   selects and coordinates transcript ownership
   app/api/routes/                   conversations, agents, health
   app/cli/init_database.py          schema provisioning entry point
 
@@ -302,41 +383,53 @@ frontend/src/components/            ConversationList, MessageList, MessageCompos
 
 ## API reference
 
-Every route derives the user from the authenticated principal. **No route accepts a user id from the
-client** — that is what makes cross-user access structurally impossible rather than merely
-discouraged.
+Every route uses the same server-owned POC principal. **No route accepts a user id from the client.**
+This preserves repository scoping but does not provide multi-user isolation or authentication.
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/health/live` | Liveness. Touches no dependencies. |
 | `GET` | `/health/ready` | Readiness. Pings the database. |
+| `GET` | `/api/capabilities` | Browser-relevant server limits |
 | `GET` | `/api/agents` | Agents this API is allowed to address |
 | `POST` | `/api/conversations` | Start a conversation — body `{"agentName": "..."}` |
-| `GET` | `/api/conversations` | List the caller's conversations |
+| `GET` | `/api/conversations` | List conversations; optional `limit` and `cursor` |
 | `GET` | `/api/conversations/{id}` | Fetch one |
-| `DELETE` | `/api/conversations/{id}` | Delete it and all of its messages |
-| `GET` | `/api/conversations/{id}/messages` | Full transcript, oldest first |
-| `POST` | `/api/conversations/{id}/messages` | Send a turn — body `{"content": "..."}` |
+| `DELETE` | `/api/conversations/{id}` | Fence and purge it, retaining only an expiring content-free tombstone |
+| `GET` | `/api/conversations/{id}/messages` | One chronological page; optional `limit` and `cursor` |
+| `POST` | `/api/conversations/{id}/messages` | Send a turn; requires `Idempotency-Key` |
 
-Example with dev auth:
+List responses have the shape `{"items": [...], "nextCursor": "..."}`. Pass `nextCursor` back as
+`cursor` until it is `null`. An idempotency key is scoped to the caller and conversation: replaying
+the same key and body returns the persisted turn, while reusing it for different content returns
+`409`. A turn still in flight returns `409` with `Retry-After`; a post-dispatch timeout also returns
+`409`, but is terminal because retrying could duplicate a non-idempotent model request.
+
+Conversation responses include `conversationManager` (`foundry` or `cosmos`). The user-scoped
+`foundryConversationId` link remains server-side in Cosmos and is not exposed to the browser.
+Foundry conversation items do not expose item timestamps, so their message `createdAt` is `null`;
+Cosmos-managed messages retain timestamps.
+
+Example from the same workstation:
 
 ```powershell
-$h = @{ 'x-dev-user-id' = 'alice'; 'Content-Type' = 'application/json' }
+$h = @{
+  'Content-Type' = 'application/json'
+  'Idempotency-Key' = [guid]::NewGuid().ToString()
+}
 $c = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/api/conversations' -Method POST -Headers $h `
        -Body '{"agentName":"triage-agent"}'
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/conversations/$($c.id)/messages" -Method POST `
        -Headers $h -Body '{"content":"The export button does nothing in Safari."}'
 ```
 
-### Authentication modes
+### POC access boundary
 
-| `AUTH_MODE` | Behaviour |
-|-------------|-----------|
-| `dev` | Trusts the `x-dev-user-id` header. **Local workstation only** — the app refuses to start when Azure compute markers (`CONTAINER_APP_NAME`, `WEBSITE_INSTANCE_ID`, `WEBSITE_SITE_NAME`, `KUBERNETES_SERVICE_HOST`) are present. |
-| `entra` | Validates an Entra ID bearer token against the tenant JWKS and uses its `oid` claim. Requires `AZURE_TENANT_ID` and `API_AUDIENCE`. |
-
-`oid` is the partition key because it is immutable and non-reassignable — unlike `sub` (unique only
-per application) or `email` / `preferred_username` (both mutable).
+The browser sends no bearer token or user identity header. FastAPI rejects non-loopback peers and
+scopes all records to `API_POC_USER_ID`. Vite also binds to `127.0.0.1`, preventing its `/api` proxy
+from turning the local API into a network service. Do not use `--host 0.0.0.0`, expose either port,
+or place a network-accessible reverse proxy in front of this POC. A deployed version needs real
+authentication, authorization, tenant-aware scoping, rate limits, and an owner-reviewed threat model.
 
 ---
 
@@ -359,33 +452,47 @@ azd env set AZURE_RESOURCE_GROUP           "<foundry-resource-group>"
 
 There is **no `azd provision`** — the project already exists and this repo does not own it.
 
+Verify only the required names, without printing their values:
+
+```powershell
+$required = @(
+  'AZURE_AI_PROJECT_ENDPOINT',
+  'AZURE_AI_PROJECT_ID',
+  'AZURE_AI_MODEL_DEPLOYMENT_NAME',
+  'AZURE_TENANT_ID',
+  'AZURE_RESOURCE_GROUP'
+)
+
+foreach ($name in $required) {
+  $value = azd env get-value $name 2>$null
+  $state = if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($value)) {
+    'set (redacted)'
+  } else {
+    'MISSING'
+  }
+  "$name=$state"
+}
+```
+
+Do not paste an environment-wide dump into an issue, pull request, build log, or chat. Public Azure
+identifiers are not credentials, but they map a live environment and should be shared only when the
+troubleshooting context requires them.
+
 ### Code agent (no extra infrastructure)
 
 ```powershell
 azd deploy triage-agent --no-prompt
 ```
 
-### Container agent (needs a registry)
+### Container agent (needs an owner-managed registry)
 
-`azd` only wires registry RBAC for registries it provisions itself. Against an existing project you
-must supply one and grant pull rights, or the deploy fails with
-`[ImageError] Container registry authentication failed`.
+`azd` only wires registry RBAC for registries it provisions itself. This repository does not own
+the registry or its role assignments. Before deploying, the environment owner must provide an
+existing registry, grant the deployer push access, and grant the applicable Foundry account/project
+identities `AcrPull` at the narrowest practical scope.
 
 ```powershell
-# 1. A registry (skip if you already have one)
-az acr create --name <acrname> --resource-group <rg> --sku Basic --location <region> --admin-enabled false
-
-# 2. Grant AcrPull to BOTH the Foundry account and project managed identities
-$acrId = az acr show --name <acrname> --query id -o tsv
-$account = az cognitiveservices account show -n <account> -g <rg> --query identity.principalId -o tsv
-$project = az resource show --ids "<project-arm-resource-id>" --api-version 2025-06-01 --query identity.principalId -o tsv
-
-foreach ($p in @($account, $project)) {
-  az role assignment create --assignee-object-id $p --assignee-principal-type ServicePrincipal `
-     --role AcrPull --scope $acrId
-}
-
-# 3. Point azd at it, then deploy
+# Use only values supplied and approved by the environment owner.
 azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "<acrname>.azurecr.io"
 azd env set AZURE_CONTAINER_REGISTRY_NAME     "<acrname>"
 azd deploy research-agent --no-prompt
@@ -394,7 +501,8 @@ azd deploy research-agent --no-prompt
 ### Verify
 
 ```powershell
-azd ai agent show --output json     # expect "status": "active"
+azd ai agent show triage-agent --output json     # expect "status": "active"
+azd ai agent show research-agent --output json   # expect "status": "active"
 .\scripts\smoke-test.ps1 -AgentName research-agent
 ```
 
@@ -414,23 +522,43 @@ Each successful deploy creates a **new immutable version**; the latest is active
 
 ## Security
 
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Do not open a public
+issue with vulnerability details, tokens, environment dumps, message content, or proof-of-concept
+data.
+
 | Control | Implementation |
 |---------|----------------|
 | No secrets in source | Only `*.env.example` is committed; `.env*` is git-ignored at any depth |
-| Keyless auth everywhere | `DefaultAzureCredential` for Foundry **and** the database (`MONGODB-OIDC`) |
-| Identity never client-supplied | Derived from a validated token's `oid` claim, never a body or query field |
-| Structural per-user isolation | Every repository filter is built by `_scope(user_id, …)`; no query can omit `userId` |
-| Indistinguishable 404s | Another user's conversation returns the same 404 as one that doesn't exist |
+| Keyless service auth | `DefaultAzureCredential` for Foundry **and** the database (`MONGODB-OIDC`) |
+| Local-only caller boundary | FastAPI rejects non-loopback peers; Vite binds to `127.0.0.1` |
+| Identity never client-supplied | A fixed server-owned `API_POC_USER_ID` scopes every repository operation |
+| Scoped persistence | Every repository filter is built by `_scope(user_id, …)`; no query can omit `userId` |
 | Agent allow-list | Clients can only reach agents named in `AGENT_NAMES` |
-| Dev-auth fails closed | `AUTH_MODE=dev` refuses to start when Azure compute markers are present |
+| Deployment fails closed | `API_POC_MODE=true` is refused when recognized Azure compute markers are present |
 | Explicit CORS | Origin allow-list only; an empty list never becomes `*` |
 | Input bounds | Capped in the Pydantic model, again in the service, hard ceiling 32k chars |
+| Retry-safe turns | Durable per-user idempotency state; no transport retry after the dispatch fence |
+| Explicit transcript ownership | Research uses a linked Foundry Conversation; triage uses bounded role-preserving input with `store=false` and a Cosmos transcript |
+| No transcript duplication | Research content stays in Foundry; Cosmos stores only its user-scoped link, counters, and turn/item references |
+| Privacy-preserving delete | User-scoped tombstone fences sends; Foundry state is removed before its link is purged; a short-lived content-free tombstone remains |
 | Prompt-injection posture | System prompts treat user content as untrusted data, not instructions |
 | PII-safe logging | Lengths, ids and outcomes only; Azure SDK HTTP body logging stays off |
 | Error bodies leak nothing | Internal failures are logged; clients get a generic message |
 | Non-root container | `appuser` (UID 10001), `nologin` shell, multi-stage build |
 | Bounded dependencies | Lower + upper bounds everywhere; `pip-audit --strict` in the gate |
 | Static analysis | `ruff` (`S`, `BLE`, `B`, `ASYNC`, `ANN`) + `mypy --strict` with the pydantic plugin |
+
+Public identifiers and secrets are different classes:
+
+| Public configuration or identifier | Secret or sensitive data |
+|---|---|
+| Tenant/subscription IDs, resource names, ARM IDs, service endpoints, Entra client ID | Tokens, API keys, client secrets, passwords, private keys |
+| Agent/model/database/collection names | Credential-bearing connection strings, signed URLs, unredacted chat/log exports |
+
+Examples use placeholders for both classes so the repository does not publish a live environment
+map. If a secret is committed, rotate or revoke it before removing it from Git history. Rewrite
+history only when secrets or identifiers in prior commits must be removed by owner decision; no
+history rewrite is performed by this repository's release tooling.
 
 If a real secret is ever needed, use a Foundry project connection and reference it from
 `azure.yaml` as `${{connections.<name>.credentials.<field>}}` — resolved at sandbox start and never
@@ -455,8 +583,8 @@ echoed back by the management API. Do not put it in an image or in `azure.yaml`.
 |---------|-------------|
 | `Configuration error: Required environment variable ... is not set` | Copy `backend\api\.env.example` → `.env` and fill it in. Fail-fast is intentional. |
 | `ModuleNotFoundError: No module named 'app'` | You launched uvicorn from the wrong directory or the wrong venv. `cd backend\api` and activate `.\.venv`, or pass `--app-dir backend\api`. |
-| `AUTH_MODE=dev is refused on Azure compute` | Working as designed. Use `AUTH_MODE=entra`. |
-| `502 The agent is currently unavailable` | The agent isn't deployed, or is named differently. Check the API log for the underlying error and run `azd ai agent show`. |
+| `API_POC_MODE is refused on Azure compute` | Working as designed. This unauthenticated POC is local-only; add caller authentication before deployment. |
+| `502 The agent is currently unavailable` | The agent isn't deployed, or is named differently. Check the API log for the underlying error and run `azd ai agent show <agent-name> --output json`. |
 | Port 8000 already in use | `Get-NetTCPConnection -LocalPort 8000 -State Listen` then stop the owning process. |
 
 ### Agent deployment
@@ -464,10 +592,11 @@ echoed back by the management API. Do not put it in an image or in `azure.yaml`.
 | Symptom | Cause / fix |
 |---------|-------------|
 | `ValidationError: Environment variable 'AGENT_*' is reserved for platform use` | `FOUNDRY_*` **and** `AGENT_*` are reserved. Rename to `APP_*`. Note the container path rejects this while the code path does not. |
-| `[ImageError] Container registry authentication failed` | The Foundry managed identities lack `AcrPull` on your registry. See [Container agent](#container-agent-needs-a-registry). |
+| `[ImageError] Container registry authentication failed` | The Foundry managed identities lack `AcrPull` on your registry. See [Container agent](#container-agent-needs-an-owner-managed-registry). |
 | Agent deploys but never becomes healthy | The image is not `linux/amd64`. Keep `docker.remoteBuild: true`. |
 | `session_not_ready` (424) on first invoke | Cold start. Retry after 15–30s. |
 | `ModuleNotFoundError` in the sandbox but not locally | Something outside the service directory was imported. See the warning in [Repository layout](#repository-layout). |
+| `azd ai agent show` seems to hang | It is waiting on an interactive agent picker. Pass the agent name: `azd ai agent show triage-agent`. |
 
 ### Local environment
 
@@ -479,20 +608,25 @@ echoed back by the management API. Do not put it in an image or in `azure.yaml`.
 
 ---
 
-## Tearing down
+## Project policies
 
-The agents and any resources you created live in your Azure subscription:
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Support](SUPPORT.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Release checklist](docs/release-checklist.md)
+- [Private release evidence schema](docs/release-evidence.schema.json)
 
-```powershell
-# Remove a deployed agent version (leaves the Foundry project intact)
-azd ai agent show --output json          # inspect first
+## License and resource lifecycle
 
-# Registry created solely for this project
-az acr delete --name <acrname> --resource-group <rg>
+No `LICENSE` is present because the owner/legal terms have not been selected. That is an explicit
+public-release blocker; do not infer a license from dependencies, examples, or repository visibility.
+The release script intentionally fails until an approved `LICENSE` is added.
+It also requires a private, out-of-repository evidence file for the exact commit via
+`-ReleaseEvidencePath`; that evidence proves model-policy binding, approval, thresholds, and
+passing evaluations without publishing live environment identifiers.
 
-# Chat history
-# Drop the `agentchat` database from the Mongo cluster.
-```
-
-`azd down` is **not** appropriate here — this repo does not own the Foundry project and would
-attempt to remove resources it did not create.
+This repository does not own the existing Foundry project, model deployment, MongoDB cluster,
+registry, network, monitoring resources, or their retention policies. It therefore provides no
+automated resource teardown or purge procedure. Environment owners must review dependencies,
+retention and shared-resource impact before changing or deleting any Azure resource.

@@ -4,19 +4,19 @@
  * All requests are same-origin: the Vite dev server proxies `/api` to FastAPI, so
  * the browser never makes a cross-origin call during development.
  *
- * The user identity is NOT sent by this client in production. `x-dev-user-id` is
- * attached only while the backend runs with AUTH_MODE=dev; with AUTH_MODE=entra
- * the backend derives the user from a validated bearer token and ignores the header.
+ * This local POC has no application-user authentication. The API assigns one
+ * server-owned identity and accepts only loopback clients, so this client sends
+ * neither bearer tokens nor caller-selected identity headers.
  */
 
 import type {
   AgentSummary,
+  ApiCapabilities,
   Conversation,
+  CursorPage,
   Message,
   SendMessageResult,
 } from './types';
-
-const DEV_USER_ID = import.meta.env.VITE_DEV_USER_ID ?? 'local-dev-user';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -31,39 +31,8 @@ export class ApiError extends Error {
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'DELETE';
   body?: unknown;
-  signal?: AbortSignal;
-}
-
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, signal } = options;
-
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-    'x-dev-user-id': DEV_USER_ID,
-  };
-  if (body !== undefined) {
-    headers['Content-Type'] = 'application/json';
-  }
-
-  const init: RequestInit = { method, headers };
-  if (body !== undefined) {
-    init.body = JSON.stringify(body);
-  }
-  if (signal) {
-    init.signal = signal;
-  }
-
-  const response = await fetch(path, init);
-
-  if (!response.ok) {
-    throw new ApiError(response.status, await readErrorDetail(response));
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return (await response.json()) as T;
+  headers?: HeadersInit;
+  signal?: AbortSignal | undefined;
 }
 
 async function readErrorDetail(response: Response): Promise<string> {
@@ -81,33 +50,101 @@ async function readErrorDetail(response: Response): Promise<string> {
   return `Request failed with status ${response.status}.`;
 }
 
-export const api = {
-  listAgents: (signal?: AbortSignal) =>
-    request<AgentSummary[]>('/api/agents', signal ? { signal } : {}),
+export function createApiClient() {
+  async function request<T>(path: string, requestOptions: RequestOptions = {}): Promise<T> {
+    const { method = 'GET', body, signal } = requestOptions;
+    const headers = new Headers(requestOptions.headers);
+    headers.set('Accept', 'application/json');
 
-  listConversations: (signal?: AbortSignal) =>
-    request<Conversation[]>('/api/conversations', signal ? { signal } : {}),
+    if (body !== undefined) {
+      headers.set('Content-Type', 'application/json');
+    }
 
-  createConversation: (agentName: string, title?: string) =>
-    request<Conversation>('/api/conversations', {
-      method: 'POST',
-      body: title ? { agentName, title } : { agentName },
-    }),
+    const init: RequestInit = { method, headers };
+    if (body !== undefined) {
+      init.body = JSON.stringify(body);
+    }
+    if (signal !== undefined) {
+      init.signal = signal;
+    }
 
-  deleteConversation: (conversationId: string) =>
-    request<void>(`/api/conversations/${encodeURIComponent(conversationId)}`, {
-      method: 'DELETE',
-    }),
+    const response = await fetch(path, init);
 
-  listMessages: (conversationId: string, signal?: AbortSignal) =>
-    request<Message[]>(
-      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
-      signal ? { signal } : {},
-    ),
+    if (!response.ok) {
+      const detail = await readErrorDetail(response);
+      throw new ApiError(response.status, detail);
+    }
 
-  sendMessage: (conversationId: string, content: string) =>
-    request<SendMessageResult>(
-      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
-      { method: 'POST', body: { content } },
-    ),
-};
+    if (response.status === 204) {
+      return undefined as T;
+    }
+
+    return (await response.json()) as T;
+  }
+
+  const withCursor = (path: string, cursor?: string | null) => {
+    if (!cursor) {
+      return path;
+    }
+    const query = new URLSearchParams({ cursor });
+    return `${path}?${query.toString()}`;
+  };
+
+  return {
+    listAgents: (signal?: AbortSignal) =>
+      request<AgentSummary[]>('/api/agents', signal ? { signal } : {}),
+
+    getCapabilities: (signal?: AbortSignal) =>
+      request<ApiCapabilities>('/api/capabilities', signal ? { signal } : {}),
+
+    listConversations: (cursor?: string | null, signal?: AbortSignal) =>
+      request<CursorPage<Conversation>>(
+        withCursor('/api/conversations', cursor),
+        signal ? { signal } : {},
+      ),
+
+    createConversation: (agentName: string, title?: string, signal?: AbortSignal) =>
+      request<Conversation>('/api/conversations', {
+        method: 'POST',
+        body: title ? { agentName, title } : { agentName },
+        signal,
+      }),
+
+    deleteConversation: (conversationId: string, signal?: AbortSignal) =>
+      request<void>(`/api/conversations/${encodeURIComponent(conversationId)}`, {
+        method: 'DELETE',
+        signal,
+      }),
+
+    listMessages: (
+      conversationId: string,
+      cursor?: string | null,
+      signal?: AbortSignal,
+    ) =>
+      request<CursorPage<Message>>(
+        withCursor(
+          `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+          cursor,
+        ),
+        signal ? { signal } : {},
+      ),
+
+    sendMessage: (
+      conversationId: string,
+      content: string,
+      idempotencyKey: string,
+      signal?: AbortSignal,
+    ) =>
+      request<SendMessageResult>(
+        `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+        {
+          method: 'POST',
+          body: { content },
+          headers: { 'Idempotency-Key': idempotencyKey },
+          signal,
+        },
+      ),
+  };
+}
+
+export type ApiClient = ReturnType<typeof createApiClient>;

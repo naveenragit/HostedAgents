@@ -1,17 +1,29 @@
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, type ResolvedConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// The dev server proxies /api and /health to the FastAPI service. Using a proxy
-// rather than a cross-origin call keeps the browser on a single origin during
-// development, so cookies and CORS behave the same way they would behind a
-// reverse proxy in production.
+// The unauthenticated POC must stay on loopback. Binding both Vite and FastAPI
+// locally prevents another machine from reaching the API through this proxy.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const backend = env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:8000';
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      {
+        name: 'enforce-poc-loopback',
+        configResolved(config: ResolvedConfig) {
+          const hosts = [config.server.host, config.preview.host];
+          if (hosts.some((host) => host !== '127.0.0.1')) {
+            throw new Error(
+              'The unauthenticated POC dev and preview servers must bind to 127.0.0.1.',
+            );
+          }
+        },
+      },
+    ],
     server: {
+      host: '127.0.0.1',
       port: 5173,
       strictPort: true,
       proxy: {
@@ -19,9 +31,14 @@ export default defineConfig(({ mode }) => {
         '/health': { target: backend, changeOrigin: true },
       },
     },
+    preview: {
+      host: '127.0.0.1',
+      port: 4173,
+      strictPort: true,
+    },
     build: {
       outDir: 'dist',
-      sourcemap: true,
+      sourcemap: env.VITE_BUILD_SOURCEMAP === 'true',
     },
   };
 });

@@ -17,6 +17,7 @@ significant terms and accept common spelling variants.
 from __future__ import annotations
 
 import re
+from dataclasses import asdict, dataclass
 from typing import Final, Literal
 
 Severity = Literal["sev1", "sev2", "sev3", "sev4"]
@@ -125,9 +126,41 @@ _TEAM_BY_AREA: Final[dict[str, str]] = {
 
 _ESCALATION_TEAM: Final[str] = "incident-commander"
 
+_NEXT_ACTION_BY_SEVERITY: Final[dict[Severity, str]] = {
+    "sev1": "Page the incident commander and start the incident response process.",
+    "sev2": "Notify the owning on-call team and begin an impact assessment.",
+    "sev3": "Assign the issue to the owning team and collect reproducible steps.",
+    "sev4": "Queue the issue for owning-team review with supporting details.",
+}
+
 _COMPILED_AREA_PATTERNS: Final[dict[str, tuple[re.Pattern[str], ...]]] = {
     area: tuple(re.compile(p) for p in patterns) for area, patterns in _AREA_PATTERNS.items()
 }
+
+
+@dataclass(frozen=True, slots=True)
+class TriageDecision:
+    """A complete, internally consistent triage decision."""
+
+    severity: Severity
+    area: str
+    team: str
+    next_action: str
+
+    def as_tool_result(self) -> dict[str, str]:
+        """Return a JSON-serializable result for the model tool call."""
+        return asdict(self)
+
+    def as_response(self) -> str:
+        """Render the only accepted user-facing response shape."""
+        return "\n".join(
+            (
+                f"Severity: {self.severity}",
+                f"Area: {self.area}",
+                f"Team: {self.team}",
+                f"Next action: {self.next_action}",
+            )
+        )
 
 
 def classify_severity(report: str) -> Severity:
@@ -187,6 +220,32 @@ def route_to_team(area: str, severity: Severity) -> str:
     if severity == "sev1":
         return _ESCALATION_TEAM
     return _TEAM_BY_AREA.get(area, _TEAM_BY_AREA["unknown"])
+
+
+def triage_issue(report: str) -> dict[str, str]:
+    """Return one deterministic severity, area, team, and next-action decision.
+
+    Args:
+        report: The raw customer issue description.
+
+    Returns:
+        A complete decision. The area is always derived with ``identify_area``
+        before routing, so the model cannot combine independent tool outputs
+        inconsistently.
+    """
+    return make_triage_decision(report).as_tool_result()
+
+
+def make_triage_decision(report: str) -> TriageDecision:
+    """Build the canonical decision used by both the tool and output validator."""
+    severity = classify_severity(report)
+    area = identify_area(report)
+    return TriageDecision(
+        severity=severity,
+        area=area,
+        team=route_to_team(area, severity),
+        next_action=_NEXT_ACTION_BY_SEVERITY[severity],
+    )
 
 
 def _normalise(text: str) -> str:

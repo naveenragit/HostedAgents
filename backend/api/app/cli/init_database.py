@@ -11,11 +11,11 @@ import logging
 import sys
 from pathlib import Path
 
-from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 
 from app.config import ConfigError, get_settings
 from app.repositories.mongo import MongoResources
+from app.security.credentials import build_azure_credential
 
 _LOGGER = logging.getLogger("api.init")
 
@@ -30,12 +30,15 @@ async def _run() -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)  # noqa: T201
         return 1
 
+    credential = build_azure_credential(settings)
     resources = MongoResources(
         connection_string=settings.mongo_connection_string,
-        credential=DefaultAzureCredential(),
+        credential=credential,
         database_name=settings.mongo_database,
         conversations_collection=settings.conversations_collection,
         messages_collection=settings.messages_collection,
+        turns_collection=settings.turns_collection,
+        deletion_tombstone_retention_seconds=(settings.deletion_tombstone_retention_seconds),
     )
 
     try:
@@ -60,6 +63,7 @@ async def _run() -> int:
         return 2
     finally:
         await resources.close()
+        credential.close()
 
 
 def main() -> int:

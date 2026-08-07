@@ -1,29 +1,54 @@
+import { Send } from 'lucide-react';
 import { useState, type FormEvent, type KeyboardEvent } from 'react';
 
-/** Mirrors API_MAX_INPUT_CHARS on the backend; the server re-enforces it. */
-const MAX_CHARS = 8000;
-
 interface Props {
+  conversationId: string | null;
   disabled: boolean;
   isSending: boolean;
-  onSend: (content: string) => void;
+  maxChars: number;
+  onSend: (content: string) => Promise<boolean>;
 }
 
-export function MessageComposer({ disabled, isSending, onSend }: Props) {
-  const [draft, setDraft] = useState('');
+export function MessageComposer({
+  conversationId,
+  disabled,
+  isSending,
+  maxChars,
+  onSend,
+}: Props) {
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const draft = conversationId === null ? '' : (drafts[conversationId] ?? '');
+  const content = draft.trim();
+  const isOverLimit = content.length > maxChars;
+  const validationId = 'message-validation';
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const content = draft.trim();
-    if (!content || disabled || isSending) {
+    if (
+      conversationId === null ||
+      !content ||
+      disabled ||
+      isSending ||
+      isOverLimit
+    ) {
       return;
     }
-    onSend(content);
-    setDraft('');
+
+    const capturedConversationId = conversationId;
+    const capturedDraft = draft;
+    void (async () => {
+      const accepted = await onSend(content);
+      if (accepted) {
+        setDrafts((current) =>
+          current[capturedConversationId] === capturedDraft
+            ? { ...current, [capturedConversationId]: '' }
+            : current,
+        );
+      }
+    })();
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter sends; Shift+Enter inserts a newline.
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       event.currentTarget.form?.requestSubmit();
@@ -35,24 +60,39 @@ export function MessageComposer({ disabled, isSending, onSend }: Props) {
       <textarea
         className="composer__input"
         value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          if (conversationId !== null) {
+            setDrafts((current) => ({
+              ...current,
+              [conversationId]: event.target.value,
+            }));
+          }
+        }}
         onKeyDown={handleKeyDown}
-        placeholder={disabled ? 'Select or start a conversation first' : 'Send a message…'}
+        placeholder={disabled ? 'Select or start a conversation first' : 'Send a message...'}
         rows={3}
-        maxLength={MAX_CHARS}
         disabled={disabled || isSending}
         aria-label="Message"
+        aria-invalid={isOverLimit}
+        aria-describedby={validationId}
       />
       <div className="composer__footer">
-        <span className="muted composer__count">
-          {draft.length} / {MAX_CHARS}
+        <span
+          id={validationId}
+          className={isOverLimit ? 'composer__validation' : 'muted composer__count'}
+          role={isOverLimit ? 'alert' : undefined}
+        >
+          {isOverLimit
+            ? `Message is ${content.length - maxChars} characters over the ${maxChars} character limit.`
+            : `${content.length} / ${maxChars}`}
         </span>
         <button
           type="submit"
-          className="button button--send"
-          disabled={disabled || isSending || draft.trim().length === 0}
+          className="button button--primary"
+          disabled={disabled || isSending || content.length === 0 || isOverLimit}
         >
-          {isSending ? 'Sending…' : 'Send'}
+          <Send aria-hidden="true" size={16} />
+          {isSending ? 'Sending...' : 'Send'}
         </button>
       </div>
     </form>

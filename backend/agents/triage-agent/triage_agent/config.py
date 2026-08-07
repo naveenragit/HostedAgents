@@ -13,6 +13,8 @@ from typing import Final
 
 _MAX_INPUT_CHARS_CEILING: Final[int] = 32_000
 _DEFAULT_MAX_INPUT_CHARS: Final[int] = 8_000
+_MAX_OUTPUT_TOKENS_CEILING: Final[int] = 4_096
+_DEFAULT_MAX_OUTPUT_TOKENS: Final[int] = 1_200
 
 
 class ConfigError(RuntimeError):
@@ -27,6 +29,7 @@ class AgentConfig:
     model_deployment_name: str
     log_level: str
     max_input_chars: int
+    max_output_tokens: int
 
     @classmethod
     def from_env(cls) -> AgentConfig:
@@ -39,6 +42,11 @@ class AgentConfig:
             ),
             log_level=os.environ.get("APP_LOG_LEVEL", "INFO").upper(),
             max_input_chars=_read_max_input_chars(),
+            max_output_tokens=_read_positive_int(
+                "APP_MAX_OUTPUT_TOKENS",
+                default=_DEFAULT_MAX_OUTPUT_TOKENS,
+                ceiling=_MAX_OUTPUT_TOKENS_CEILING,
+            ),
         )
 
 
@@ -59,16 +67,24 @@ def _require(name: str, *, fallback_name: str | None = None) -> str:
 
 
 def _read_max_input_chars() -> int:
-    raw = os.environ.get("APP_MAX_INPUT_CHARS", "").strip()
+    return _read_positive_int(
+        "APP_MAX_INPUT_CHARS",
+        default=_DEFAULT_MAX_INPUT_CHARS,
+        ceiling=_MAX_INPUT_CHARS_CEILING,
+    )
+
+
+def _read_positive_int(name: str, *, default: int, ceiling: int) -> int:
+    raw = os.environ.get(name, "").strip()
     if not raw:
-        return _DEFAULT_MAX_INPUT_CHARS
+        return default
 
     try:
         value = int(raw)
     except ValueError as exc:
-        raise ConfigError(f"APP_MAX_INPUT_CHARS must be an integer, got {raw!r}.") from exc
+        raise ConfigError(f"{name} must be an integer, got {raw!r}.") from exc
 
     if value <= 0:
-        raise ConfigError("APP_MAX_INPUT_CHARS must be greater than zero.")
+        raise ConfigError(f"{name} must be greater than zero.")
 
-    return min(value, _MAX_INPUT_CHARS_CEILING)
+    return min(value, ceiling)

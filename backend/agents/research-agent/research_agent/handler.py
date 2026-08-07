@@ -10,29 +10,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
+from typing import TYPE_CHECKING
 
 from azure.ai.agentserver.responses import (
     CreateResponse,
     ResponseContext,
     ResponsesAgentServerHost,
-    ResponsesServerOptions,
     TextResponse,
 )
-from azure.ai.projects import AIProjectClient
-from azure.identity import DefaultAzureCredential
+from azure.ai.projects.aio import AIProjectClient
+from azure.identity.aio import DefaultAzureCredential
 
-from research_agent.instructions import SYSTEM_INSTRUCTIONS
+from research_agent.input import normalize_context_input
+from research_agent.runtime import create_completion
 
 if TYPE_CHECKING:
     from research_agent.config import AgentConfig
 
 _LOGGER = logging.getLogger("research_agent.handler")
-
-# Number of prior turns the adapter hydrates from platform-managed history.
-_HISTORY_TURNS = 20
-
-_TRUNCATION_NOTICE = "\n\n[Input truncated to the configured maximum length.]"
 
 
 def create_app(config: AgentConfig) -> ResponsesAgentServerHost:
@@ -49,11 +46,26 @@ def create_app(config: AgentConfig) -> ResponsesAgentServerHost:
         endpoint=config.project_endpoint,
         credential=credential,
     )
-    responses_client = project_client.get_openai_client().responses
-
-    app = ResponsesAgentServerHost(
-        options=ResponsesServerOptions(default_fetch_history_count=_HISTORY_TURNS),
+    openai_client = project_client.get_openai_client(
+        timeout=config.request_timeout_seconds,
     )
+    responses_client = openai_client.responses
+
+    app = ResponsesAgentServerHost()
+
+    resources = AsyncExitStack()
+    resources.push_async_callback(credential.close)
+    resources.push_async_callback(project_client.close)
+    resources.push_async_callback(openai_client.close)
+    adapter_shutdown = _registered_shutdown_handler(app)
+
+    @app.shutdown_handler  # type: ignore[misc]
+    async def shutdown() -> None:
+        try:
+            if adapter_shutdown is not None:
+                await adapter_shutdown()
+        finally:
+            await resources.aclose()
 
     # The preview adapter ships no stubs, so the decorator is untyped from mypy's
     # point of view. The handler itself below is fully annotated.
@@ -61,29 +73,31 @@ def create_app(config: AgentConfig) -> ResponsesAgentServerHost:
     async def handler(
         request: CreateResponse,
         context: ResponseContext,
-        _cancellation_signal: asyncio.Event,
+        cancellation_signal: asyncio.Event,
     ) -> TextResponse:
-        raw_input = await context.get_input_text() or ""
-        user_input = _bound_input(raw_input, config.max_input_chars)
+        input_items = await normalize_context_input(context, config.max_input_chars)
+        input_chars = sum(len(item["content"]) for item in input_items)
 
         # Log shape, never content.
         _LOGGER.info(
             "handling response request",
-            extra={"input_chars": len(user_input), "truncated": len(raw_input) > len(user_input)},
+            extra={"input_chars": input_chars, "input_messages": len(input_items)},
         )
 
-        if not user_input.strip():
+        if not any(item["content"].strip() for item in input_items):
             return TextResponse(
                 context,
                 request,
                 text="I did not receive any input. What would you like to know?",
             )
 
-        result = await asyncio.to_thread(
-            _create_completion,
+        result = await create_completion(
             responses_client,
-            config.model_deployment_name,
-            user_input,
+            model=config.model_deployment_name,
+            input_items=input_items,
+            max_output_tokens=config.max_output_tokens,
+            cancellation_signal=cancellation_signal,
+            shutdown_signal=context.shutdown,
         )
 
         return TextResponse(context, request, text=result)
@@ -91,21 +105,9 @@ def create_app(config: AgentConfig) -> ResponsesAgentServerHost:
     return app
 
 
-def _create_completion(responses_client: Any, model: str, user_input: str) -> str:
-    """Call the model synchronously; invoked on a worker thread."""
-    response = responses_client.create(
-        model=model,
-        instructions=SYSTEM_INSTRUCTIONS,
-        input=[{"role": "user", "content": user_input}],
-        # Conversation history is managed by the hosting platform, so the agent
-        # does not persist any conversation content itself.
-        store=False,
-    )
-    return str(response.output_text)
-
-
-def _bound_input(text: str, max_chars: int) -> str:
-    """Cap user input length to bound token cost and prompt-stuffing."""
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + _TRUNCATION_NOTICE
+def _registered_shutdown_handler(
+    app: ResponsesAgentServerHost,
+) -> Callable[[], Awaitable[None]] | None:
+    """Read the handler installed by the preview adapter so cleanup can compose with it."""
+    handler = getattr(app, "_shutdown_fn", None)
+    return handler if callable(handler) else None

@@ -8,13 +8,13 @@ questions about Foundry agents in this repository, read the microsoft-foundry sk
 A three-part application:
 
 - `backend/agents/` — two Microsoft Foundry **hosted agents**, deployed into an **existing**
-  Foundry project (`foundry-proj-pocs`):
+   Foundry project (environment-specific name; never commit a live value):
   - `research-agent` — **container** deployment, Python **3.11**, `responses` protocol,
     built on the `azure-ai-agentserver-responses` adapter.
   - `triage-agent` — **code** deployment, runtime **`python_3_13`**, `responses` protocol,
     built on Microsoft Agent Framework.
-- `backend/api/` — a **FastAPI** service layer. It invokes the deployed agents and is the
-  **only** component that reads or writes chat history.
+- `backend/api/` — a **FastAPI** service layer. It invokes the deployed agents, owns user scoping,
+   and coordinates both conversation-management strategies.
 - `frontend/` — a **React + TypeScript (Vite)** chat UI that talks only to the API.
 
 Design rationale and the execution plan live in `docs/implementation-plan.md`.
@@ -24,9 +24,11 @@ Read it before making structural changes.
 
 ### Persistence
 
-1. **The backend owns persistence. Agents never touch the database.** Agents stay stateless.
-   This keeps one auditable place for per-user scoping, and avoids needing database RBAC on the
-   per-agent Entra identities (which only exist *after* the first deploy).
+1. **Conversation ownership is per agent, but orchestration stays in the backend.**
+   `research-agent` uses a durable Foundry Conversation; Cosmos stores its user-scoped
+   `foundryConversationId` link and non-content turn references, never duplicate message content.
+   `triage-agent` keeps the custom Cosmos transcript and uses `store=false`. Hosted agents never
+   touch the database. Do not collapse these paths; the contrast is the purpose of the POC.
 2. **The database is Azure Cosmos DB for MongoDB (vCore)** — `*.mongocluster.cosmos.azure.com`.
    It speaks the MongoDB wire protocol. Use **PyMongo**, never `azure-cosmos` (that SDK only
    talks to Cosmos DB for NoSQL and cannot connect to this cluster).
@@ -63,3 +65,13 @@ Read it before making structural changes.
 12. **Never run `az login` or `azd auth login` on the user's behalf.** Stop and ask.
 13. **Keep the 3.11 language level** across the whole repo (`ruff` and `mypy` are pinned to `py311`).
 14. **Run `scripts/check.ps1`** before declaring any change complete.
+15. **This repository does not own Azure resource lifecycle.** Do not add project provisioning,
+   environment teardown, or purge instructions. Resource changes require an explicit environment
+   owner decision.
+16. **Keep public examples sanitized.** Tenant/subscription IDs, resource names, ARM IDs and
+   endpoints are public identifiers rather than credentials, but live values still map an
+   environment. Use placeholders in committed documentation and print only targeted, redacted
+   configuration state.
+17. **Public release remains blocked without an approved `LICENSE`.** Do not create or infer legal
+   terms. Follow `docs/release-checklist.md` and `scripts/public-release.ps1` once legal approval
+   and owner contacts are available.

@@ -14,21 +14,29 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from azure.ai.projects import AIProjectClient
-from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.api.routes import api_router
 from app.config import ConfigError, Settings, get_settings
-from app.repositories.mongo import MongoResources
+from app.repositories.mongo import InvalidCursorError, MongoResources
+from app.security.auth import require_local_request
+from app.security.credentials import build_azure_credential
 from app.services.agent_client import (
     AgentClient,
     AgentInvocationError,
     UnknownAgentError,
 )
-from app.services.conversation_service import ConversationNotFoundError
+from app.services.conversation_service import (
+    AgentOutputTooLongError,
+    ConversationConflictError,
+    ConversationNotFoundError,
+    InputTooLongError,
+    TurnPendingError,
+)
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s %(message)s"
 
@@ -37,6 +45,23 @@ _LOGGER = logging.getLogger("api")
 # Resolved from this file, not the working directory, so `uvicorn app.main:app`
 # behaves the same whether it is launched from backend/api or the repo root.
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+
+class _LocalOnlyMiddleware:
+    """Apply the POC boundary before routing, including docs and health endpoints."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            try:
+                require_local_request(Request(scope))
+            except HTTPException as exc:
+                response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+                await response(scope, receive, send)
+                return
+        await self._app(scope, receive, send)
 
 
 def _configure_logging(level: str) -> None:
@@ -59,7 +84,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Keyless throughout. One synchronous credential serves both clients: the
     # Foundry SDK is synchronous, and PyMongo's OIDC callback is invoked
     # synchronously by the driver.
-    credential = DefaultAzureCredential()
+    credential = build_azure_credential(settings)
 
     mongo = MongoResources(
         connection_string=settings.mongo_connection_string,
@@ -67,6 +92,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         database_name=settings.mongo_database,
         conversations_collection=settings.conversations_collection,
         messages_collection=settings.messages_collection,
+        turns_collection=settings.turns_collection,
+        deletion_tombstone_retention_seconds=(settings.deletion_tombstone_retention_seconds),
     )
 
     # Creates the database, collections and indexes on first run. Idempotent, so
@@ -89,7 +116,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _LOGGER.info(
         "api started",
         extra={
-            "auth_mode": settings.auth_mode.value,
+            "poc_mode": settings.poc_mode,
             "agents": ",".join(settings.agent_names),
             "database": settings.mongo_database,
         },
@@ -99,6 +126,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await mongo.close()
+        project_client.close()
+        credential.close()
         _LOGGER.info("api stopped")
 
 
@@ -118,6 +147,35 @@ def _register_exception_handlers(app: FastAPI) -> None:
             content={"detail": "Conversation not found."},
         )
 
+    @app.exception_handler(InvalidCursorError)
+    async def _invalid_cursor(_: Request, exc: InvalidCursorError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": "Invalid pagination cursor."},
+        )
+
+    @app.exception_handler(InputTooLongError)
+    async def _input_too_long(_: Request, exc: InputTooLongError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(TurnPendingError)
+    async def _turn_pending(_: Request, exc: TurnPendingError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc)},
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
+
+    @app.exception_handler(ConversationConflictError)
+    async def _conversation_conflict(_: Request, exc: ConversationConflictError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc)},
+        )
+
     @app.exception_handler(UnknownAgentError)
     async def _unknown_agent(_: Request, exc: UnknownAgentError) -> JSONResponse:
         return JSONResponse(
@@ -131,6 +189,14 @@ def _register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_502_BAD_GATEWAY,
             content={"detail": "The agent is currently unavailable. Please retry."},
+        )
+
+    @app.exception_handler(AgentOutputTooLongError)
+    async def _agent_output_too_long(_: Request, exc: AgentOutputTooLongError) -> JSONResponse:
+        _LOGGER.error("agent output rejected", extra={"error_type": type(exc).__name__})
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={"detail": "The agent returned an invalid response. Please retry."},
         )
 
 
@@ -157,16 +223,21 @@ def create_app() -> FastAPI:
     app.state.settings = settings
 
     if settings.cors_allowed_origins:
-        # Explicit allow-list only, and credentials are enabled — which the CORS
-        # spec forbids combining with a "*" origin. `Settings` never derives one.
+        # Explicit allow-list only. The POC uses no browser credentials.
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(settings.cors_allowed_origins),
-            allow_credentials=True,
+            allow_credentials=False,
             allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-            allow_headers=["Authorization", "Content-Type", "x-dev-user-id"],
+            allow_headers=[
+                "Content-Type",
+                "Idempotency-Key",
+            ],
             max_age=600,
         )
+
+    # Added after CORS so this guard is outermost and also covers preflight requests.
+    app.add_middleware(_LocalOnlyMiddleware)
 
     _register_exception_handlers(app)
     app.include_router(api_router)

@@ -48,6 +48,11 @@ def get_conversation_service(
         repository=repository,
         agent_client=agent_client,
         max_input_chars=settings.max_input_chars,
+        max_output_chars=settings.max_output_chars,
+        history_max_chars=settings.history_max_chars,
+        history_max_messages=settings.history_max_messages,
+        turn_lease_seconds=settings.turn_lease_seconds,
+        foundry_conversation_agents=settings.foundry_conversation_agents,
     )
 
 

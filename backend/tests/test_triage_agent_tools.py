@@ -9,7 +9,13 @@ from __future__ import annotations
 
 import pytest
 
-from triage_agent.tools import classify_severity, identify_area, route_to_team
+from triage_agent.tools import (
+    classify_severity,
+    identify_area,
+    make_triage_decision,
+    route_to_team,
+    triage_issue,
+)
 
 # --------------------------------------------------------------------------- #
 # Regressions from live traffic
@@ -128,6 +134,28 @@ def test_non_critical_issues_route_to_the_owning_team(area: str, expected: str) 
 
 def test_unrecognised_area_falls_back_to_the_triage_rotation() -> None:
     assert route_to_team("not-a-real-area", "sev2") == "triage-rotation"
+
+
+def test_triage_issue_returns_one_consistent_decision() -> None:
+    report = "Production is down and users cannot sign in"
+
+    assert triage_issue(report) == {
+        "severity": "sev1",
+        "area": "identity",
+        "team": "incident-commander",
+        "next_action": "Page the incident commander and start the incident response process.",
+    }
+
+
+def test_triage_decision_renders_the_canonical_response() -> None:
+    decision = make_triage_decision("The export button is broken in Safari")
+
+    assert decision.as_response() == (
+        "Severity: sev3\n"
+        "Area: web-client\n"
+        "Team: frontend-oncall\n"
+        "Next action: Assign the issue to the owning team and collect reproducible steps."
+    )
 
 
 # --------------------------------------------------------------------------- #

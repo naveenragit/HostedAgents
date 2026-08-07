@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, status
+from fastapi import APIRouter, Depends, Header, Path, Query, status
 
 from app.dependencies import ConversationServiceDep
 from app.domain.models import (
+    ConversationPageResponse,
     ConversationResponse,
     CreateConversationRequest,
+    MessagePageResponse,
     MessageResponse,
     SendMessageRequest,
     SendMessageResponse,
@@ -25,6 +27,12 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 ConversationId = Annotated[str, Path(min_length=1, max_length=64)]
+PageLimit = Annotated[int, Query(ge=1, le=100)]
+Cursor = Annotated[str | None, Query(max_length=512)]
+IdempotencyKey = Annotated[
+    str,
+    Header(alias="Idempotency-Key", min_length=1, max_length=200),
+]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -46,10 +54,15 @@ async def create_conversation(
 async def list_conversations(
     principal: PrincipalDep,
     service: ConversationServiceDep,
-) -> list[ConversationResponse]:
+    limit: PageLimit = 50,
+    cursor: Cursor = None,
+) -> ConversationPageResponse:
     """List the caller's conversations, most recently updated first."""
-    conversations = await service.list_conversations(principal.user_id)
-    return [ConversationResponse.from_domain(c) for c in conversations]
+    page = await service.list_conversations(principal.user_id, limit=limit, cursor=cursor)
+    return ConversationPageResponse(
+        items=[ConversationResponse.from_domain(item) for item in page.items],
+        next_cursor=page.next_cursor,
+    )
 
 
 @router.get("/{conversation_id}")
@@ -78,10 +91,20 @@ async def list_messages(
     conversation_id: ConversationId,
     principal: PrincipalDep,
     service: ConversationServiceDep,
-) -> list[MessageResponse]:
-    """Return the full transcript, oldest turn first."""
-    messages = await service.list_messages(principal.user_id, conversation_id)
-    return [MessageResponse.from_domain(m) for m in messages]
+    limit: PageLimit = 100,
+    cursor: Cursor = None,
+) -> MessagePageResponse:
+    """Return one stable transcript page in chronological order."""
+    page = await service.list_messages(
+        principal.user_id,
+        conversation_id,
+        limit=limit,
+        cursor=cursor,
+    )
+    return MessagePageResponse(
+        items=[MessageResponse.from_domain(item) for item in page.items],
+        next_cursor=page.next_cursor,
+    )
 
 
 @router.post("/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)
@@ -90,14 +113,18 @@ async def send_message(
     body: SendMessageRequest,
     principal: PrincipalDep,
     service: ConversationServiceDep,
+    idempotency_key: IdempotencyKey,
 ) -> SendMessageResponse:
     """Send a turn to the agent and return both the user turn and the reply."""
     user_message, assistant_message = await service.send_message(
         user_id=principal.user_id,
         conversation_id=conversation_id,
         content=body.content,
+        idempotency_key=idempotency_key,
     )
+    conversation = await service.get_conversation(principal.user_id, conversation_id)
     return SendMessageResponse(
+        conversation=ConversationResponse.from_domain(conversation),
         user_message=MessageResponse.from_domain(user_message),
         assistant_message=MessageResponse.from_domain(assistant_message),
     )

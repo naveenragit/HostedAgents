@@ -3,16 +3,21 @@
     Creates the local virtual environments and installs dependencies.
 
 .DESCRIPTION
-    Two venvs are required, by design:
+        Three venvs are required, by design:
 
       .\.venv                     Python 3.11 - developer tooling and the offline
                                   test suite. Agent runtime SDKs are NOT installed
                                   here (see the comment beside the install call).
 
-      .\src\triage-agent\.venv    Python 3.13 - matches the code-deploy runtime
-                                  (python_3_13). `azd ai agent run` resolves the
-                                  venv relative to the SERVICE directory, so this
-                                  one must live there, not at the repo root.
+            .\backend\api\.venv         Python 3.11 - FastAPI runtime dependencies.
+
+            .\backend\agents\triage-agent\.venv
+                                                                    Python 3.13 - matches the code-deploy runtime
+                                                                    (python_3_13). `azd ai agent run` resolves the
+                                                                    venv relative to the service directory.
+
+        Frontend dependencies are installed from frontend\package-lock.json with
+        `npm ci` so local setup and CI resolve the same dependency graph.
 
     See docs/implementation-plan.md section 2 for why the versions differ.
 
@@ -27,12 +32,28 @@ Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
+function Invoke-BasePython {
+    param(
+        [Parameter(Mandatory)][string] $Version,
+        [Parameter(Mandatory)][string[]] $ArgumentList
+    )
+
+    $overrideName = "HOSTED_AGENTS_PYTHON_$($Version.Replace('.', ''))"
+    $override = [Environment]::GetEnvironmentVariable($overrideName)
+    if (-not [string]::IsNullOrWhiteSpace($override)) {
+        & $override @ArgumentList
+        return
+    }
+
+    & py "-$Version" @ArgumentList
+}
+
 function Assert-PythonVersion {
     param([Parameter(Mandatory)][string] $Version)
 
-    & py "-$Version" --version *> $null
+    Invoke-BasePython -Version $Version -ArgumentList @('--version') *> $null
     if ($LASTEXITCODE -ne 0) {
-        throw "Python $Version was not found. Install it, or check 'py -0p'."
+        throw "Python $Version was not found. Install it, check 'py -0p', or set HOSTED_AGENTS_PYTHON_$($Version.Replace('.', ''))."
     }
 }
 
@@ -48,7 +69,7 @@ function New-Venv {
     }
 
     Write-Host "[create] Python $Version venv at $Path"
-    & py "-$Version" -m venv $Path
+    Invoke-BasePython -Version $Version -ArgumentList @('-m', 'venv', $Path)
     if ($LASTEXITCODE -ne 0) { throw "Failed to create venv at $Path" }
 }
 
@@ -108,6 +129,30 @@ New-Venv -Version '3.11' -Path $apiVenv
 Install-Requirements -VenvPath $apiVenv -RequirementsFiles @(
     (Join-Path $repoRoot 'backend\api\requirements.txt')
 )
+
+# --- Frontend dependencies --------------------------------------------------
+$frontendPath = Join-Path $repoRoot 'frontend'
+$packageLock = Join-Path $frontendPath 'package-lock.json'
+if (-not (Test-Path $packageLock)) {
+    throw "Frontend lock file not found: $packageLock"
+}
+$npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if ($null -eq $npmCommand) {
+    $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
+}
+if ($null -eq $npmCommand) {
+    throw 'npm was not found. Install a supported Node.js version and retry.'
+}
+
+Write-Host '[install] frontend dependencies (npm ci)'
+Push-Location $frontendPath
+try {
+    & $npmCommand.Source ci
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
+}
+finally {
+    Pop-Location
+}
 
 Write-Host ''
 Write-Host 'Bootstrap complete.' -ForegroundColor Green
