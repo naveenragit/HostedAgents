@@ -53,6 +53,17 @@ services:
       # Platform-injected FOUNDRY_* vars must NOT be declared here.
       - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
         value: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+      # Routes model calls through the API Management AI gateway so token and
+      # cost telemetry is attributed per user. Set with:
+      #   azd env set APP_MODEL_GATEWAY_URL "https://<apim>.azure-api.net/<path>"
+      # Leave unset to call the Foundry project directly.
+      - name: APP_MODEL_GATEWAY_URL
+        value: ${APP_MODEL_GATEWAY_URL}
+      # Keeps prompts, completions, function arguments and system instructions OUT of
+      # Application Insights. The hosted runtime turns this on by default; the repo's
+      # telemetry contract is metadata only, so it is pinned off explicitly.
+      - name: ENABLE_SENSITIVE_DATA
+        value: "false"
       - name: APP_LOG_LEVEL
         value: INFO
       - name: APP_MAX_INPUT_CHARS
@@ -91,6 +102,17 @@ services:
     environmentVariables:
       - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
         value: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+      # Routes model calls through the API Management AI gateway so token and
+      # cost telemetry is attributed per user. Set with:
+      #   azd env set APP_MODEL_GATEWAY_URL "https://<apim>.azure-api.net/<path>"
+      # Leave unset to call the Foundry project directly.
+      - name: APP_MODEL_GATEWAY_URL
+        value: ${APP_MODEL_GATEWAY_URL}
+      # Keeps prompts, completions, function arguments and system instructions OUT of
+      # Application Insights. The hosted runtime turns this on by default; the repo's
+      # telemetry contract is metadata only, so it is pinned off explicitly.
+      - name: ENABLE_SENSITIVE_DATA
+        value: "false"
       - name: APP_LOG_LEVEL
         value: INFO
       - name: APP_MAX_INPUT_CHARS

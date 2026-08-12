@@ -18,6 +18,7 @@ async def create_completion(
     max_output_tokens: int,
     cancellation_signal: asyncio.Event,
     shutdown_signal: asyncio.Event,
+    extra_headers: dict[str, str] | None = None,
 ) -> str:
     """Invoke Responses and cancel the live SDK request when either signal fires."""
     request_task = asyncio.ensure_future(
@@ -27,6 +28,7 @@ async def create_completion(
             input=input_items,
             max_output_tokens=max_output_tokens,
             store=False,
+            extra_headers=extra_headers,
         )
     )
     cancellation_waiter = asyncio.create_task(cancellation_signal.wait())

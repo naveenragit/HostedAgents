@@ -13,15 +13,16 @@ from __future__ import annotations
 import logging
 import sys
 
-from agent_framework import Agent
+from agent_framework import Agent, AgentMiddleware
 from agent_framework_foundry_hosting import ResponsesHostServer
 from azure.identity.aio import DefaultAzureCredential
 from dotenv import load_dotenv
 
 from triage_agent.client import ManagedFoundryChatClient
 from triage_agent.config import AgentConfig, ConfigError
+from triage_agent.gateway import create_gateway_chat_client
 from triage_agent.instructions import SYSTEM_INSTRUCTIONS
-from triage_agent.middleware import TriageBoundaryMiddleware
+from triage_agent.middleware import GatewayAttributionMiddleware, TriageBoundaryMiddleware
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s %(message)s"
 
@@ -44,16 +45,32 @@ def build_agent(config: AgentConfig) -> Agent:
     # Keyless auth: the platform-provisioned per-agent Entra identity in Foundry,
     # the signed-in developer locally. No API keys anywhere.
     credential = DefaultAzureCredential()
-    client = ManagedFoundryChatClient(
-        project_endpoint=config.project_endpoint,
-        model=config.model_deployment_name,
-        credential=credential,
-    )
+    middleware: list[AgentMiddleware] = []
+
+    # Gateway mode sends model traffic through API Management, which is what
+    # produces per-user token and cost telemetry. Direct mode is retained so the
+    # agent still runs where no gateway is provisioned.
+    client: object
+    if config.model_gateway_url is not None:
+        client = create_gateway_chat_client(
+            base_url=config.model_gateway_url,
+            model=config.model_deployment_name,
+            timeout_seconds=config.request_timeout_seconds,
+        )
+        middleware.append(GatewayAttributionMiddleware(credential))
+    else:
+        client = ManagedFoundryChatClient(
+            project_endpoint=config.project_endpoint,
+            model=config.model_deployment_name,
+            credential=credential,
+        )
+
+    middleware.append(TriageBoundaryMiddleware(config.max_input_chars))
 
     return Agent(
         client=client,
         instructions=SYSTEM_INSTRUCTIONS,
-        middleware=[TriageBoundaryMiddleware(config.max_input_chars)],
+        middleware=middleware,
         # History is managed by the hosting platform, so the agent stores no
         # conversation content of its own.
         default_options={

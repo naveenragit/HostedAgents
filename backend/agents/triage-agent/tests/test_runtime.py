@@ -15,7 +15,7 @@ from agent_framework_foundry_hosting import ResponsesHostServer
 import main as composition_root
 from triage_agent.client import ManagedFoundryChatClient
 from triage_agent.config import AgentConfig
-from triage_agent.middleware import TriageBoundaryMiddleware
+from triage_agent.middleware import GatewayAttributionMiddleware, TriageBoundaryMiddleware
 from triage_agent.policy import TriagePolicyError
 from triage_agent.tools import make_triage_decision
 
@@ -123,6 +123,8 @@ class TriageConstructionTests(unittest.IsolatedAsyncioTestCase):
             log_level="INFO",
             max_input_chars=321,
             max_output_tokens=456,
+            request_timeout_seconds=60.0,
+            model_gateway_url=None,
         )
 
         with (
@@ -146,6 +148,44 @@ class TriageConstructionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.default_options["tools"], [])
         self.assertEqual(len(agent.middleware or []), 1)
         self.assertIsInstance((agent.middleware or [None])[0], TriageBoundaryMiddleware)
+
+    def test_build_agent_routes_through_gateway_and_attributes_the_user(self) -> None:
+        credential = object()
+        client = object()
+        config = AgentConfig(
+            project_endpoint="https://example.invalid/api/projects/test",
+            model_deployment_name="test-model",
+            log_level="INFO",
+            max_input_chars=321,
+            max_output_tokens=456,
+            request_timeout_seconds=45.0,
+            model_gateway_url="https://gateway.invalid/agents/openai/v1",
+        )
+
+        with (
+            patch.object(composition_root, "DefaultAzureCredential", return_value=credential),
+            patch.object(
+                composition_root,
+                "create_gateway_chat_client",
+                return_value=client,
+            ) as factory,
+            patch.object(composition_root, "ManagedFoundryChatClient") as direct_client_type,
+        ):
+            agent = composition_root.build_agent(config)
+
+        factory.assert_called_once_with(
+            base_url=config.model_gateway_url,
+            model=config.model_deployment_name,
+            timeout_seconds=45.0,
+        )
+        direct_client_type.assert_not_called()
+        self.assertIs(agent.client, client)
+        middleware = list(agent.middleware or [])
+        self.assertEqual(len(middleware), 2)
+        # Attribution must run before the triage boundary so every downstream
+        # model call carries the gateway headers.
+        self.assertIsInstance(middleware[0], GatewayAttributionMiddleware)
+        self.assertIsInstance(middleware[1], TriageBoundaryMiddleware)
 
     async def test_managed_client_closes_each_owned_resource_once(self) -> None:
         openai_client = _AsyncCloseable()

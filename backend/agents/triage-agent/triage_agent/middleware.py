@@ -5,11 +5,37 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from agent_framework import AgentContext, AgentMiddleware, AgentResponse
+from azure.core.credentials_async import AsyncTokenCredential
 
+from triage_agent.gateway import gateway_headers
 from triage_agent.policy import TriagePolicyError, validate_response, validate_transcript
 from triage_agent.tools import make_triage_decision
 
 _TOOL_NAME = "triage_current_issue"
+
+
+class GatewayAttributionMiddleware(AgentMiddleware):  # type: ignore[misc]
+    """Authorize each model call and attribute it to the platform user.
+
+    Headers are attached per invocation rather than per client because the token
+    expires and the user differs between requests, while the chat client is built
+    once at start-up.
+    """
+
+    def __init__(self, credential: AsyncTokenCredential) -> None:
+        self._credential = credential
+
+    async def process(
+        self,
+        context: AgentContext,
+        call_next: Callable[[], Awaitable[None]],
+    ) -> None:
+        client_kwargs = dict(context.client_kwargs or {})
+        headers = dict(client_kwargs.get("extra_headers") or {})
+        headers.update(await gateway_headers(self._credential))
+        client_kwargs["extra_headers"] = headers
+        context.client_kwargs = client_kwargs
+        await call_next()
 
 
 class TriageBoundaryMiddleware(AgentMiddleware):  # type: ignore[misc]

@@ -23,6 +23,11 @@ from azure.ai.agentserver.responses import (
 from azure.ai.projects.aio import AIProjectClient
 from azure.identity.aio import DefaultAzureCredential
 
+from research_agent.gateway import (
+    create_gateway_client,
+    current_user_key,
+    gateway_headers,
+)
 from research_agent.input import normalize_context_input
 from research_agent.runtime import create_completion
 
@@ -42,21 +47,33 @@ def create_app(config: AgentConfig) -> ResponsesAgentServerHost:
     # the platform provisions at deploy time; locally it resolves to the signed-in
     # developer. No API keys are used anywhere.
     credential = DefaultAzureCredential()
-    project_client = AIProjectClient(
-        endpoint=config.project_endpoint,
-        credential=credential,
-    )
-    openai_client = project_client.get_openai_client(
-        timeout=config.request_timeout_seconds,
-    )
+    resources = AsyncExitStack()
+    resources.push_async_callback(credential.close)
+
+    # Gateway mode sends model traffic through API Management, which is what
+    # produces per-user token and cost telemetry. Direct mode is retained so the
+    # agent still runs where no gateway is provisioned.
+    if config.model_gateway_url is not None:
+        openai_client = create_gateway_client(
+            config.model_gateway_url,
+            config.request_timeout_seconds,
+        )
+        resources.push_async_callback(openai_client.close)
+    else:
+        project_client = AIProjectClient(
+            endpoint=config.project_endpoint,
+            credential=credential,
+        )
+        resources.push_async_callback(project_client.close)
+        openai_client = project_client.get_openai_client(
+            timeout=config.request_timeout_seconds,
+        )
+        resources.push_async_callback(openai_client.close)
+
     responses_client = openai_client.responses
 
     app = ResponsesAgentServerHost()
 
-    resources = AsyncExitStack()
-    resources.push_async_callback(credential.close)
-    resources.push_async_callback(project_client.close)
-    resources.push_async_callback(openai_client.close)
     adapter_shutdown = _registered_shutdown_handler(app)
 
     @app.shutdown_handler  # type: ignore[misc]
@@ -77,11 +94,16 @@ def create_app(config: AgentConfig) -> ResponsesAgentServerHost:
     ) -> TextResponse:
         input_items = await normalize_context_input(context, config.max_input_chars)
         input_chars = sum(len(item["content"]) for item in input_items)
+        user_key = current_user_key()
 
-        # Log shape, never content.
+        # Log shape and the pseudonymous key, never content.
         _LOGGER.info(
             "handling response request",
-            extra={"input_chars": input_chars, "input_messages": len(input_items)},
+            extra={
+                "input_chars": input_chars,
+                "input_messages": len(input_items),
+                "user_key": user_key,
+            },
         )
 
         if not any(item["content"].strip() for item in input_items):
@@ -91,6 +113,12 @@ def create_app(config: AgentConfig) -> ResponsesAgentServerHost:
                 text="I did not receive any input. What would you like to know?",
             )
 
+        headers = (
+            await gateway_headers(credential, user_key)
+            if config.model_gateway_url is not None
+            else None
+        )
+
         result = await create_completion(
             responses_client,
             model=config.model_deployment_name,
@@ -98,6 +126,7 @@ def create_app(config: AgentConfig) -> ResponsesAgentServerHost:
             max_output_tokens=config.max_output_tokens,
             cancellation_signal=cancellation_signal,
             shutdown_signal=context.shutdown,
+            extra_headers=headers,
         )
 
         return TextResponse(context, request, text=result)

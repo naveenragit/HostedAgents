@@ -96,3 +96,41 @@ def test_config_is_immutable(clean_env: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(AttributeError):
         config.model_deployment_name = "other"  # type: ignore[misc]
+
+
+def test_model_gateway_url_defaults_to_direct_foundry_calls(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    _set_required(clean_env)
+
+    assert AgentConfig.from_env().model_gateway_url is None
+
+
+def test_model_gateway_url_is_read_and_normalized(clean_env: pytest.MonkeyPatch) -> None:
+    _set_required(clean_env)
+    clean_env.setenv("APP_MODEL_GATEWAY_URL", " https://gw.example.invalid/agents/openai/v1/ ")
+
+    config = AgentConfig.from_env()
+
+    assert config.model_gateway_url == "https://gw.example.invalid/agents/openai/v1"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://gw.example.invalid/agents",
+        "https://user:secret@gw.example.invalid/agents",
+        "https://gw.example.invalid/agents?api-key=secret",
+        "https://gw.example.invalid/agents#fragment",
+        "not-a-url",
+    ],
+)
+def test_unsafe_model_gateway_url_is_rejected(
+    clean_env: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    _set_required(clean_env)
+    clean_env.setenv("APP_MODEL_GATEWAY_URL", value)
+
+    with pytest.raises(ConfigError, match="APP_MODEL_GATEWAY_URL"):
+        AgentConfig.from_env()

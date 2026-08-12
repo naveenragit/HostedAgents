@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Final
+from urllib.parse import urlsplit
 
 # Absolute ceiling on user input length, independent of any env override.
 # Bounds prompt-stuffing and runaway token cost.
@@ -34,6 +35,13 @@ class AgentConfig:
     max_input_chars: int
     max_output_tokens: int
     request_timeout_seconds: float
+    model_gateway_url: str | None
+    """APIM AI-gateway base URL. When set, model calls are routed through it.
+
+    Routing through the gateway is what produces per-user token and cost
+    telemetry. When unset the agent calls the Foundry project directly and no
+    per-user attribution is recorded.
+    """
 
     @classmethod
     def from_env(cls) -> AgentConfig:
@@ -63,6 +71,7 @@ class AgentConfig:
                 default=_DEFAULT_REQUEST_TIMEOUT_SECONDS,
                 ceiling=_REQUEST_TIMEOUT_SECONDS_CEILING,
             ),
+            model_gateway_url=_read_model_gateway_url(),
         )
 
 
@@ -80,6 +89,37 @@ def _require(name: str, *, fallback_name: str | None = None) -> str:
             ".env.example to .env and fill it in."
         )
     return value
+
+
+def _read_model_gateway_url() -> str | None:
+    """Return a validated HTTPS gateway base URL, or ``None`` when not configured.
+
+    Rejects anything that could smuggle credentials or redirect traffic: plaintext
+    HTTP, embedded userinfo, query strings and fragments.
+    """
+    raw = os.environ.get("APP_MODEL_GATEWAY_URL", "").strip()
+    if not raw:
+        return None
+
+    try:
+        parsed = urlsplit(raw)
+    except ValueError as exc:
+        raise ConfigError("APP_MODEL_GATEWAY_URL is not a valid URL.") from exc
+
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConfigError(
+            "APP_MODEL_GATEWAY_URL must be an https URL without credentials, "
+            "query string or fragment."
+        )
+
+    return raw.rstrip("/")
 
 
 def _read_max_input_chars() -> int:
