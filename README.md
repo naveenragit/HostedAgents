@@ -47,6 +47,69 @@ the code can be shared privately only under terms supplied by the repository own
 
 ---
 
+## Architecture: model access through API Management
+
+The agents do not call the Foundry model endpoint directly. Both send their model traffic to an
+**API Management AI gateway**, which is what makes per-user token and cost reporting possible — a
+direct call is invisible to the gateway and cannot be attributed to anyone.
+
+```mermaid
+flowchart TB
+    subgraph clients["Callers"]
+        api_svc["backend/api<br/>FastAPI orchestration"]
+    end
+
+    subgraph foundry["Microsoft Foundry project"]
+        research["research-agent<br/>container, Python 3.11"]
+        triage["triage-agent<br/>code deploy, python_3_13"]
+    end
+
+    subgraph gateway["API Management — AI gateway"]
+        policy["Inbound policy<br/>validate Entra token<br/>capture x-user-key and x-agent-name<br/>emit LLM token metrics"]
+    end
+
+    models["Foundry account<br/>model deployments"]
+
+    subgraph obs["Application Insights and Log Analytics"]
+        gwlog["Gateway request log<br/>user and agent attribution"]
+        llmlog["Gateway LLM log<br/>prompt and completion tokens"]
+        metrics["Token metrics<br/>cached and reasoning tokens"]
+    end
+
+    billing["Cost Management<br/>billed unit prices"]
+    workbook["Workbook<br/>per-user tokens and cost"]
+
+    api_svc -->|"Responses protocol"| research
+    api_svc -->|"Responses protocol"| triage
+    research -->|"Entra token plus attribution headers"| policy
+    triage -->|"Entra token plus attribution headers"| policy
+    policy -->|"Entra passthrough"| models
+    policy --> gwlog
+    policy --> llmlog
+    policy --> metrics
+    gwlog --> workbook
+    llmlog --> workbook
+    metrics --> workbook
+    billing -->|"effective-dated rates"| workbook
+```
+
+How it holds together:
+
+| Concern | How it works |
+|---|---|
+| Routing | `APP_MODEL_GATEWAY_URL` points each agent at the gateway. Leave it unset and the agent calls the Foundry project directly, with no per-user telemetry. |
+| Authentication | Entra **passthrough**. The agent presents its own token and the gateway forwards it, so the gateway holds no standing access to the models and cannot be used to escalate. Each agent identity needs a data-plane role on the Foundry account. |
+| Attribution | The agent sends `x-user-key`, taken from the platform identity in the hosted request context, and `x-agent-name`. The key is never caller-supplied, so it cannot be spoofed. |
+| Bounds | Attribution keys become Azure Monitor metric dimensions, so they are validated for charset and length before being sent. |
+| Privacy | Prompts and completions are never logged. `ENABLE_SENSITIVE_DATA=false` is pinned on both agents because the hosted runtime enables it by default. |
+
+The diagram above is [Mermaid](https://mermaid.js.org/), rendered inline by GitHub. The
+application-tier view is the block at the top of this file, and the design rationale behind both is
+in [docs/implementation-plan.md](docs/implementation-plan.md). The report those telemetry sources
+feed is described in [Cost and consumption reporting](#cost-and-consumption-reporting).
+
+---
+
 ## Three things worth knowing before you start
 
 **1. Conversation ownership is deliberately different for the two agents.**
@@ -347,6 +410,8 @@ scripts/bootstrap.ps1               create the three venvs, install dependencies
 scripts/check.ps1                   lint + types + tests + dependency audit
 scripts/init-database.ps1           create database, collections, indexes
 scripts/smoke-test.ps1              loopback-only end-to-end agent/persistence test
+scripts/deploy-workbook.ps1         restore the cost workbook and its saved KQL functions
+scripts/sync-model-prices.ps1       report the model token rates actually billed
 scripts/verify-release-evidence.ps1 validate private RAI/evaluation evidence for a commit
 scripts/verify-release-artifact.ps1 build and inspect the tracked-file ZIP
 scripts/public-release.ps1          fail-closed public artifact gate
@@ -372,6 +437,9 @@ backend/tests/                      offline unit tests
 frontend/src/api/client.ts          typed fetch wrapper
 frontend/src/hooks/useChat.ts       chat state, request cancellation
 frontend/src/components/            ConversationList, MessageList, MessageComposer, ErrorBanner
+
+observability/hosted-agents-workbook.json   workbook definition, resource IDs parameterised
+observability/functions/*.kql               saved Log Analytics functions the workbook depends on
 ```
 
 > ⚠️ **Do not add a shared package under `backend/agents/`.** Code deploy zips **only** the service
@@ -605,6 +673,79 @@ echoed back by the management API. Do not put it in an image or in `azure.yaml`.
 | `bootstrap.ps1` fails building `cryptography` (Rust / OpenSSL) | Windows/ARM64 wheel gap. Check the pin in `constraints-local.txt` still points at a release with a `win_arm64` wheel: `pip download cryptography --only-binary=:all: --no-deps -d $env:TEMP\c` |
 | `uv` fails with a TLS `HandshakeFailure` | Known on this network; `bootstrap.ps1` uses `pip` for that reason. |
 | mypy reports `Duplicate module named "main"` | Type-check one package at a time, as `scripts/check.ps1` does. |
+
+---
+
+## Cost and consumption reporting
+
+An Azure Monitor **workbook** reports what the agents consumed, who consumed it, and what it cost.
+It lives in the Application Insights resource the gateway and the Foundry project both report to:
+**Application Insights → Workbooks → *Hosted agent model consumption and cost***.
+
+It answers, per user, per agent and per model:
+
+| Group | Panels |
+|---|---|
+| Summary | Requests, active users, tokens, cost, cost per request, success rate, P95 latency |
+| Trends | Daily spend anomalies against a 30-day baseline, cost and token time series |
+| Chargeback | Cost and share per user, spend concentration, per-agent totals |
+| Unit economics | Cost per request, cost per 1K tokens, output-to-input ratio, model mix |
+| Efficiency | Prompt cache hit rate and savings, reasoning-token overhead |
+| Reliability | Success rate, 429 throttling, 4xx/5xx, P50/P95/P99 latency |
+| Adoption | Active users and requests per user over time |
+| Trust | Rate provenance, coverage indicators, source freshness, request audit trail |
+
+### How cost is calculated
+
+There is no cost field in any telemetry. Azure emits **tokens**; money only exists in billing. The
+workbook multiplies measured tokens by an **effective-dated rate table**, and tags every rate with
+where it came from:
+
+| `RateSource` | Meaning |
+|---|---|
+| `billed` | Observed in this subscription's own Cost Management records — what Azure actually charged |
+| `mixed` | One token direction is billed, the other is still retail |
+| `retail` | Public price list only, an estimate |
+
+That distinction is not cosmetic. Retail prices for the GPT-5 family were observed at **twice** the
+rate actually billed, so a report built purely on the public price list overstated spend by 2x.
+Rates are effective-dated so that correcting or refreshing a price never silently re-prices history.
+
+Two cost figures are shown deliberately: *list cost* prices every input token at the full rate and
+is an upper bound; *cache-adjusted cost* prices cached input at its discount. Neither is an invoice
+— reconcile against Cost Management before charging anyone.
+
+### Keeping it current
+
+```powershell
+# Report the token rates actually billed, as effective-dated rows to append
+.\scripts\sync-model-prices.ps1 -AccountName <foundry-account>
+
+# Restore or update the workbook and the saved functions it depends on
+.\scripts\deploy-workbook.ps1 -ResourceGroup <rg> -WorkspaceName <workspace> -AppInsightsName <component>
+```
+
+The workbook and its two saved KQL functions are versioned under `observability/`, with workspace
+and Application Insights resource IDs replaced by placeholders so no environment map is committed.
+`deploy-workbook.ps1` substitutes them at deploy time and refuses to publish if any placeholder is
+left unresolved. Append new rate rows rather than editing existing ones — editing rewrites history,
+which is the failure the effective dating exists to prevent.
+
+### What it cannot tell you
+
+- **Traffic that bypasses the gateway is invisible.** It still bills, but it cannot be attributed.
+  Reconciliation against billing is the way to detect it.
+- **Cached tokens are not in the gateway log.** Model responses return
+  `usage.input_tokens_details.cached_tokens`, but API Management does not persist that breakdown, so
+  cached and reasoning figures come from the emitted token metrics instead.
+- **Requests made before attribution was enabled show as `unattributed`** rather than being dropped,
+  because missing token data is unavailable, not zero.
+- **Billing lags usage** by roughly a day for model meters, so the most recent traffic is priced
+  from the last known rate until billing catches up.
+
+A worked example — a frozen baseline, the invariants that had to hold across a repricing, and the
+validation of both — is in
+[docs/cost-baseline-2026-08-12.md](docs/cost-baseline-2026-08-12.md).
 
 ---
 

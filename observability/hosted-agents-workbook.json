@@ -1,0 +1,629 @@
+{
+  "version": "Notebook/1.0",
+  "isLocked": false,
+  "items": [
+    {
+      "type": 1,
+      "name": "header",
+      "content": {
+        "json": "# Hosted agent model consumption and cost\n\nPer-user token consumption, chargeback and efficiency for model traffic routed through the API Management AI gateway."
+      }
+    },
+    {
+      "type": 9,
+      "name": "parameters",
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "style": "pills",
+        "queryType": 0,
+        "parameters": [
+          {
+            "id": "p-timerange",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 604800000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 259200000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ]
+            }
+          },
+          {
+            "id": "p-userkey",
+            "version": "KqlParameterItem/1.0",
+            "name": "UserKey",
+            "label": "User",
+            "type": 2,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "isRequired": true,
+            "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | distinct UserKey | union (print UserKey = '*') | order by UserKey asc",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "__LOG_ANALYTICS_WORKSPACE_ID__"
+            ],
+            "value": [
+              "*"
+            ]
+          },
+          {
+            "id": "p-agent",
+            "version": "KqlParameterItem/1.0",
+            "name": "AgentName",
+            "label": "Agent",
+            "type": 2,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "isRequired": true,
+            "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | distinct AgentName | union (print AgentName = '*') | order by AgentName asc",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "__LOG_ANALYTICS_WORKSPACE_ID__"
+            ],
+            "value": [
+              "*"
+            ]
+          },
+          {
+            "id": "p-model",
+            "version": "KqlParameterItem/1.0",
+            "name": "ModelName",
+            "label": "Model",
+            "type": 2,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "isRequired": true,
+            "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | distinct ModelName | union (print ModelName = '*') | order by ModelName asc",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "__LOG_ANALYTICS_WORKSPACE_ID__"
+            ],
+            "value": [
+              "*"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-summary",
+      "content": {
+        "json": "## Executive summary"
+      }
+    },
+    {
+      "type": 3,
+      "name": "kpis",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Headline metrics for the selected range",
+        "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize Requests = count(), ActiveUsers = dcount(UserKey), InputTokens = sum(PromptTokens), OutputTokens = sum(CompletionTokens), TotalTokens = sum(TotalTokens), ListCostUsd = sum(EstimatedCostUsd), SuccessRatePct = round(100.0 * countif(toint(ResponseCode) < 400) / count(), 2), P95LatencyMs = round(percentile(toreal(TotalTime), 95), 0) | extend CostPerRequestUsd = round(ListCostUsd / todouble(Requests), 6), TokensPerRequest = round(todouble(TotalTokens) / todouble(Requests), 0), ListCostUsd = round(ListCostUsd, 4) | project Requests, ActiveUsers, TotalTokens, ListCostUsd, CostPerRequestUsd, TokensPerRequest, SuccessRatePct, P95LatencyMs | extend kv = pack_all() | mv-expand kind = array kv | project Metric = tostring(kv[0]), Value = tostring(kv[1])",
+        "size": 3,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "tiles",
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Metric",
+            "formatter": 1
+          },
+          "leftContent": {
+            "columnMatch": "Value",
+            "formatter": 1
+          },
+          "showBorder": true
+        }
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-trends",
+      "content": {
+        "json": "## Spend trends and anomalies\n\nHow consumption is moving over the selected range, and whether any day departs from the recent baseline."
+      }
+    },
+    {
+      "type": 3,
+      "name": "anomalies",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Daily spend anomalies (30 day baseline, z-score)",
+        "query": "let daily = HostedAgentModelUsage | where TimeGenerated > ago(30d) | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | summarize CostUsd = sum(EstimatedCostUsd), Requests = count(), Users = dcount(UserKey) by Day = bin(TimeGenerated, 1d); let stats = daily | summarize MeanUsd = avg(CostUsd), SdUsd = stdev(CostUsd) | extend k = 1; daily | extend k = 1 | join kind=inner stats on k | extend ZScore = iff(SdUsd > 0.0, round((CostUsd - MeanUsd) / SdUsd, 2), 0.0) | extend Status = case(SdUsd <= 0.0, 'insufficient history', ZScore >= 2.0, 'HIGH - investigate', ZScore <= -2.0, 'unusually low', 'normal') | project Day, CostUsd = round(CostUsd, 4), Requests, Users, BaselineUsd = round(MeanUsd, 4), ZScore, Status | order by Day desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 3,
+      "name": "cost-over-time",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "List cost over time by model",
+        "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize CostUsd = sum(EstimatedCostUsd) by bin(TimeGenerated, {TimeRange:grain}), ModelName | order by TimeGenerated asc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "linechart"
+      }
+    },
+    {
+      "type": 3,
+      "name": "tokens-over-time",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Tokens over time by agent",
+        "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize TotalTokens = sum(TotalTokens) by bin(TimeGenerated, {TimeRange:grain}), AgentName | order by TimeGenerated asc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "barchart"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-chargeback",
+      "content": {
+        "json": "## Chargeback and allocation\n\nCost allocated to the pseudonymous user identity supplied by the Foundry platform. `Unallocated %` in the coverage panel is the FinOps KPI to drive toward zero."
+      }
+    },
+    {
+      "type": 3,
+      "name": "per-user",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Consumption and cost per user",
+        "query": "let total = toscalar(HostedAgentModelUsage | where TimeGenerated {TimeRange} | summarize sum(EstimatedCostUsd)); HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize Requests = count(), InputTokens = sum(PromptTokens), OutputTokens = sum(CompletionTokens), TotalTokens = sum(TotalTokens), CostUsd = sum(EstimatedCostUsd), Agents = dcount(AgentName), Models = dcount(ModelName), Failures = countif(toint(ResponseCode) >= 400) by UserKey | extend CostPerRequestUsd = round(CostUsd / todouble(Requests), 6), TokensPerRequest = round(todouble(TotalTokens) / todouble(Requests), 0), CostSharePct = iff(total > 0.0, round(100.0 * CostUsd / total, 2), 0.0), CostUsd = round(CostUsd, 6) | order by CostUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "TotalTokens",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "blue"
+              }
+            },
+            {
+              "columnMatch": "CostUsd",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "green"
+              }
+            },
+            {
+              "columnMatch": "CostSharePct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "orange"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "concentration",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Spend concentration - are a few users driving the bill?",
+        "query": "let total = toscalar(HostedAgentModelUsage | where TimeGenerated {TimeRange} | summarize sum(EstimatedCostUsd)); HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({AgentName}) or AgentName in ({AgentName}) | summarize CostUsd = sum(EstimatedCostUsd), Requests = count() by UserKey | order by CostUsd desc | extend Rank = row_number() | extend CumulativeUsd = row_cumsum(CostUsd) | extend SharePct = iff(total > 0.0, round(100.0 * CostUsd / total, 2), 0.0), CumulativeSharePct = iff(total > 0.0, round(100.0 * CumulativeUsd / total, 2), 0.0) | project Rank, UserKey, Requests, CostUsd = round(CostUsd, 6), SharePct, CumulativeSharePct | take 20",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "CumulativeSharePct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "redBright"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "per-agent",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Consumption and cost per agent",
+        "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize Requests = count(), Users = dcount(UserKey), InputTokens = sum(PromptTokens), OutputTokens = sum(CompletionTokens), CostUsd = sum(EstimatedCostUsd), MedianLatencyMs = round(percentile(toreal(TotalTime), 50), 0), P95LatencyMs = round(percentile(toreal(TotalTime), 95), 0) by AgentName | extend CostPerRequestUsd = round(CostUsd / todouble(Requests), 6), CostUsd = round(CostUsd, 6) | order by CostUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-unit",
+      "content": {
+        "json": "## Unit economics and benchmarking\n\nCost per request and cost per 1K tokens let you compare agents and models on equal terms, and spot an expensive model being used for cheap work."
+      }
+    },
+    {
+      "type": 3,
+      "name": "unit-economics",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Unit cost by agent and model",
+        "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize Requests = count(), InputTokens = sum(PromptTokens), OutputTokens = sum(CompletionTokens), TotalTokens = sum(TotalTokens), CostUsd = sum(EstimatedCostUsd) by AgentName, ModelName | extend CostPerRequestUsd = round(CostUsd / todouble(Requests), 6), CostPer1KTokensUsd = iff(TotalTokens > 0, round(1000.0 * CostUsd / todouble(TotalTokens), 6), 0.0), TokensPerRequest = round(todouble(TotalTokens) / todouble(Requests), 0), OutputToInputRatio = iff(InputTokens > 0, round(todouble(OutputTokens) / todouble(InputTokens), 2), 0.0), CostUsd = round(CostUsd, 6) | order by CostPer1KTokensUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 3,
+      "name": "per-model",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Model mix and cost share",
+        "query": "let total = toscalar(HostedAgentModelUsage | where TimeGenerated {TimeRange} | summarize sum(EstimatedCostUsd)); HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize Requests = count(), Users = dcount(UserKey), InputTokens = sum(PromptTokens), OutputTokens = sum(CompletionTokens), CostUsd = sum(EstimatedCostUsd), PricedRequests = countif(PriceKnown) by ModelName, DeploymentName | extend CostSharePct = iff(total > 0.0, round(100.0 * CostUsd / total, 2), 0.0), RequestSharePct = 0.0, PricingCoverage = strcat(PricedRequests, ' / ', Requests), CostUsd = round(CostUsd, 6) | project-away PricedRequests, RequestSharePct | order by CostUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "CostSharePct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "green"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "rate-provenance",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Rate provenance and effective dates - how much of this bill is based on real billed rates",
+        "query": "let total = toscalar(HostedAgentModelUsage | where TimeGenerated {TimeRange} | summarize sum(EstimatedCostUsd)); HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize Requests = count(), CostUsd = sum(EstimatedCostUsd), RateEffectiveFrom = min(RateValidFrom) by ModelName, RateSource | extend CostSharePct = iff(total > 0.0, round(100.0 * CostUsd / total, 2), 0.0), CostUsd = round(CostUsd, 6) | extend Confidence = case(RateSource == 'billed', 'authoritative - rate observed in Cost Management', RateSource == 'mixed', 'partly authoritative - one direction still retail', RateSource == 'retail', 'estimate - public price list', 'not priced') | project ModelName, RateSource, Confidence, RateEffectiveFrom, Requests, CostUsd, CostSharePct | order by CostUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "CostSharePct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "green"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-efficiency",
+      "content": {
+        "json": "## Efficiency and optimization\n\nPrompt caching and reasoning tokens are the two largest controllable levers. Cached input is billed at a large discount, so a low cache hit rate on a repetitive workload is money left on the table. Reasoning tokens are billed as output but never shown to the user.\n\nThese panels read the gateway **token metrics**, not the gateway log, because the log carries no cached-token column. Rows recorded before the model dimension was added show an empty model and are not priced."
+      }
+    },
+    {
+      "type": 3,
+      "name": "cache-efficiency",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Prompt cache efficiency and savings",
+        "query": "HostedAgentTokenCategories | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | summarize PromptTokens = sum(PromptTokens), CachedTokens = sum(CachedPromptTokens), BillableInputTokens = sum(BillableInputTokens), CacheAdjustedCostUsd = sum(CacheAdjustedCostUsd), CacheSavingsUsd = sum(CacheSavingsUsd) by AgentName, ModelName | extend CacheHitRatePct = iff(PromptTokens > 0, round(100.0 * todouble(CachedTokens) / todouble(PromptTokens), 2), 0.0), CacheAdjustedCostUsd = round(CacheAdjustedCostUsd, 6), CacheSavingsUsd = round(CacheSavingsUsd, 6) | order by CacheAdjustedCostUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "CacheHitRatePct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "green"
+              }
+            },
+            {
+              "columnMatch": "CacheSavingsUsd",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "blue"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "reasoning-overhead",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Reasoning token overhead (billed as output, never displayed)",
+        "query": "HostedAgentTokenCategories | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | summarize CompletionTokens = sum(CompletionTokens), ReasoningTokens = sum(ReasoningTokens), PromptTokens = sum(PromptTokens) by AgentName, ModelName | extend ReasoningSharePct = iff(CompletionTokens > 0, round(100.0 * todouble(ReasoningTokens) / todouble(CompletionTokens), 2), 0.0), VisibleOutputTokens = CompletionTokens - ReasoningTokens | order by ReasoningTokens desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "ReasoningSharePct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "orange"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "token-categories",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Token categories per user",
+        "query": "HostedAgentTokenCategories | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | summarize PromptTokens = sum(PromptTokens), CachedPromptTokens = sum(CachedPromptTokens), CompletionTokens = sum(CompletionTokens), ReasoningTokens = sum(ReasoningTokens), CacheAdjustedCostUsd = round(sum(CacheAdjustedCostUsd), 6) by UserKey, AgentName | order by CacheAdjustedCostUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-reliability",
+      "content": {
+        "json": "## Reliability and performance\n\nFailed and throttled calls still consume engineering time and can still consume tokens. A rising 429 count means the workload is hitting a token or rate limit and needs quota or load balancing."
+      }
+    },
+    {
+      "type": 3,
+      "name": "reliability",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Success, throttling and latency by agent",
+        "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize Requests = count(), Succeeded = countif(toint(ResponseCode) < 400), Throttled429 = countif(toint(ResponseCode) == 429), ClientErrors4xx = countif(toint(ResponseCode) >= 400 and toint(ResponseCode) < 500 and toint(ResponseCode) != 429), ServerErrors5xx = countif(toint(ResponseCode) >= 500), P50LatencyMs = round(percentile(toreal(TotalTime), 50), 0), P95LatencyMs = round(percentile(toreal(TotalTime), 95), 0), P99LatencyMs = round(percentile(toreal(TotalTime), 99), 0), MedianBackendMs = round(percentile(toreal(BackendTime), 50), 0) by AgentName | extend SuccessRatePct = round(100.0 * todouble(Succeeded) / todouble(Requests), 2) | order by Requests desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "SuccessRatePct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "green"
+              }
+            },
+            {
+              "columnMatch": "Throttled429",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "red"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "status-over-time",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Response codes over time",
+        "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | summarize Requests = count() by bin(TimeGenerated, {TimeRange:grain}), ResponseCode = tostring(ResponseCode) | order by TimeGenerated asc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "barchart"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-adoption",
+      "content": {
+        "json": "## Adoption\n\nActive users and requests per user show whether spend is growing because more people use the agents, or because the same people are using them more heavily."
+      }
+    },
+    {
+      "type": 3,
+      "name": "adoption",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Active users and requests over time",
+        "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | where UserKey != 'unattributed' | where '*' in ({AgentName}) or AgentName in ({AgentName}) | summarize ActiveUsers = dcount(UserKey), Requests = count() by bin(TimeGenerated, {TimeRange:grain}) | extend RequestsPerUser = iff(ActiveUsers > 0, round(todouble(Requests) / todouble(ActiveUsers), 1), 0.0) | order by TimeGenerated asc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "linechart"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-quality",
+      "content": {
+        "json": "## Data quality, coverage and audit\n\nTrust the numbers above only as far as these panels allow. Unallocated cost cannot be charged back, and unpriced requests are counted as zero dollars."
+      }
+    },
+    {
+      "type": 3,
+      "name": "data-quality",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Coverage and trust indicators",
+        "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | summarize Requests = count(), Unattributed = countif(UserKey == 'unattributed'), UnknownAgent = countif(AgentName == 'unknown'), UnpricedRequests = countif(PriceKnown == false), ZeroTokenRequests = countif(TotalTokens == 0), StreamedRequests = countif(IsStreamCompletion == true), FailedRequests = countif(toint(ResponseCode) >= 400) | extend UnallocatedCostPct = round(100.0 * todouble(Unattributed) / todouble(Requests), 2), UnpricedPct = round(100.0 * todouble(UnpricedRequests) / todouble(Requests), 2), MissingTokenDataPct = round(100.0 * todouble(ZeroTokenRequests) / todouble(Requests), 2)",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "UnallocatedCostPct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "red"
+              }
+            },
+            {
+              "columnMatch": "UnpricedPct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "orange"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "recent-requests",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Request audit trail (no prompt or completion content)",
+        "query": "HostedAgentModelUsage | where TimeGenerated {TimeRange} | where '*' in ({UserKey}) or UserKey in ({UserKey}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | project TimeGenerated, UserKey, AgentName, ModelName, DeploymentName, Region, PromptTokens, CompletionTokens, TotalTokens, EstimatedCostUsd = round(EstimatedCostUsd, 6), ResponseCode, TotalTimeMs = TotalTime, BackendTimeMs = BackendTime, IsStreamCompletion, CorrelationId, RequestId | order by TimeGenerated desc | take 200",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-about",
+      "content": {
+        "json": "## About this report\n\nWhere every number comes from, and what it does and does not mean.\n\n| Source | What it provides | Cached tokens? |\n| --- | --- | --- |\n| `ApiManagementGatewayLlmLog` + `ApiManagementGatewayLogs` | Per-request tokens, model, latency, status. Joined on `CorrelationId`. | **No** - the table has only prompt, completion and total token columns |\n| Gateway token metrics (`AppMetrics`) | Cached and reasoning token categories | Yes |\n| **Cost Management** (`Microsoft.Consumption/usageDetails`) | **The rates.** Billed unit price per meter per day, which is what Azure actually charged. Read by `scripts\\sync-model-prices.ps1` and embedded as an effective-dated table, so it is a point-in-time copy rather than a live feed. | No cached meter has billed yet |\n\nQuantities are never taken from billing: token counts always come from the gateway, and billing supplies only the price. Billing does not carry a user dimension, so it cannot attribute cost on its own.\n\nModel responses do return `usage.input_tokens_details.cached_tokens`, but API Management does not persist that breakdown to the log table. It is only captured by the `llm-emit-token-metric` policy, so any cached figure in this report comes from metrics rather than logs.\n\n**Rates are effective-dated and tagged by provenance.** `billed` means the rate was observed in this subscription's own Cost Management records, so it is what Azure actually charged. `mixed` means one token direction is billed and the other is still retail. `retail` means public price list, which has been observed at **twice** the billed rate for the GPT-5 family. Check the rate provenance panel before treating any figure as chargeable.\n\n**Two cost figures are shown deliberately.** *List cost* applies the effective rate to every input token and is an upper bound. *Cache-adjusted cost* prices cached input at its discounted rate. Neither is an invoice.\n\nNo prompts or completions are recorded. Requests that predate attribution appear as `unattributed` rather than being dropped, because missing token data is unavailable, not zero."
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-asof",
+      "content": {
+        "json": "## Data as of\n\nDifferent parts of this report are current to different points in time. Read this panel before quoting any figure.\n\n| What | Freshness |\n| --- | --- |\n| Token counts, user attribution, latency, status | Near real time. Log Analytics ingestion is typically a few minutes behind the request. |\n| Cached and reasoning token categories | Near real time, from gateway metrics, aggregated per minute. |\n| **Rates** | **Not live.** Each rate carries an effective date and applies from that date onward. Billed rates are observed in Cost Management, which lags usage by roughly a day for model meters. |\n\nRates are refreshed by running `scripts\\sync-model-prices.ps1`. Until that is re-run, newly changed prices are not reflected."
+      }
+    },
+    {
+      "type": 3,
+      "name": "data-as-of",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Freshness of every source, including the rates",
+        "query": "let llm = ApiManagementGatewayLlmLog | where TimeGenerated > ago(30d) | summarize Latest = max(TimeGenerated), Items = count() | extend Source = '1. Token counts (gateway LLM log)', Kind = 'telemetry'; let gwl = ApiManagementGatewayLogs | where TimeGenerated > ago(30d) | where ApiId == 'hosted-agents-models' | summarize Latest = max(TimeGenerated), Items = count() | extend Source = '2. User attribution (gateway request log)', Kind = 'telemetry'; let met = AppMetrics | where TimeGenerated > ago(30d) | where Name == 'Total Tokens' | summarize Latest = max(TimeGenerated), Items = count() | extend Source = '3. Cached and reasoning tokens (gateway metrics)', Kind = 'telemetry'; let rate = HostedAgentModelUsage | where isnotnull(RateValidFrom) | summarize Latest = max(RateValidFrom), Items = dcount(ModelName) | extend Source = '4. Model rates (Cost Management, via sync script)', Kind = 'rate'; union llm, gwl, met, rate | extend AgeMinutes = round(todouble(datetime_diff('minute', now(), Latest)), 0) | extend AgeDays = round(AgeMinutes / 1440.0, 1) | extend Freshness = case(Kind == 'rate' and AgeMinutes <= 10080.0, 'current - rates change rarely', Kind == 'rate', 'review - rerun sync-model-prices.ps1', AgeMinutes <= 15.0, 'current', AgeMinutes <= 120.0, 'slightly behind', 'no recent traffic, or ingestion delayed') | project Source, DataAsOfUtc = Latest, AgeDays, Items, Freshness | order by Source asc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    }
+  ],
+  "fallbackResourceIds": [
+    "__APP_INSIGHTS_RESOURCE_ID__"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
