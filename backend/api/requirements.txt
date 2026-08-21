@@ -5,7 +5,7 @@
 # reach the app unreviewed. Audit with `pip-audit` via scripts/check.ps1.
 
 fastapi>=0.141.1,<1.0.0
-uvicorn[standard]>=0.52.1,<1.0.0
+uvicorn[standard]>=0.52.3,<1.0.0
 pydantic>=2.13.4,<3.0.0
 
 # Azure Cosmos DB for MongoDB (vCore) speaks the MongoDB wire protocol, so this
