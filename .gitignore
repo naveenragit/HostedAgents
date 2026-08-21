@@ -87,6 +87,11 @@ pip-audit-report.json
 *.zip
 *.tar.gz
 
+# The deploy script copies the canonical meter map into the function package so
+# the zip is self-contained. Tracking the copy would create a second source of
+# truth that silently drifts from observability/model-meter-map.json.
+backend/functions/billing-sync/billing_sync/model-meter-map.json
+
 # ---------------------------------------------------------------------------
 # Node / frontend
 # ---------------------------------------------------------------------------

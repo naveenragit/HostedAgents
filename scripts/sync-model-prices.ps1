@@ -37,7 +37,7 @@
     API were both unusable: the former gateway-times-out, the latter returns 429.
 
 .EXAMPLE
-    .\scripts\sync-model-prices.ps1 -AccountName foundry-pocs
+    .\scripts\sync-model-prices.ps1 -AccountName <foundry-account>
 
 .NOTES
     Billing lags usage. Model meters are typically a day or more behind, so the
@@ -55,36 +55,34 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# Maps a billed meter name to the model deployment and the token direction it
-# prices. Billing names do not match deployment names and vary in casing and
-# spacing between model families, so this cannot be derived reliably.
-# Add an entry whenever a new model is deployed.
-$meterMap = @(
-    @{ Pattern = '^5\.4 inp Gl';                 Model = 'gpt-5.4';                Direction = 'input' }
-    @{ Pattern = '^5\.4 opt Gl';                 Model = 'gpt-5.4';                Direction = 'output' }
-    @{ Pattern = '^5\.4 cd inp Gl';              Model = 'gpt-5.4';                Direction = 'cachedInput' }
-    @{ Pattern = '^GPT 5 Inpt Glbl';             Model = 'gpt-5';                  Direction = 'input' }
-    @{ Pattern = '^GPT 5 outpt Glbl';            Model = 'gpt-5';                  Direction = 'output' }
-    @{ Pattern = '^GPT 5 Mini [Ii]npt Glbl';     Model = 'gpt-5-mini';             Direction = 'input' }
-    @{ Pattern = '^GPT 5 Mini outpt Glbl';       Model = 'gpt-5-mini';             Direction = 'output' }
-    @{ Pattern = '^GPT 5\.1 inp Gl';             Model = 'gpt-5.1';                Direction = 'input' }
-    @{ Pattern = '^GPT 5\.1 opt Gl';             Model = 'gpt-5.1';                Direction = 'output' }
-    @{ Pattern = '^gpt 4\.1 Inp glbl';           Model = 'gpt-4.1';                Direction = 'input' }
-    @{ Pattern = '^gpt 4\.1 Outp glbl';          Model = 'gpt-4.1';                Direction = 'output' }
-    @{ Pattern = '^gpt-4o-\d+-Inp-glbl';         Model = 'gpt-4o';                 Direction = 'input' }
-    @{ Pattern = '^gpt-4o-\d+-Outp-glbl';        Model = 'gpt-4o';                 Direction = 'output' }
-    @{ Pattern = '^text-embedding-3-large-glbl'; Model = 'text-embedding-3-large'; Direction = 'input' }
-    @{ Pattern = '^text-embedding-3-small-glbl'; Model = 'text-embedding-3-small'; Direction = 'input' }
-)
+# Shared with the billing-sync function so the two cannot drift apart and
+# silently disagree about which meter belongs to which model.
+$mapPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'observability\model-meter-map.json'
+if (-not (Test-Path $mapPath)) {
+    throw "Meter map not found at $mapPath."
+}
+# Only the standard tier derives a deployment's rate. A long-context meter
+# prices the same deployment differently, so including it here would emit two
+# conflicting input rates for one model.
+$allMeters = @((Get-Content -Raw -Path $mapPath | ConvertFrom-Json).meters)
+$meterMap = @($allMeters | Where-Object { $_.tier -eq 'standard' })
 
 function Resolve-Meter {
     param([string]$MeterName)
     foreach ($entry in $meterMap) {
-        if ($MeterName -match $entry.Pattern) {
-            return [pscustomobject]@{ Model = $entry.Model; Direction = $entry.Direction }
+        if ($MeterName -match $entry.pattern) {
+            return [pscustomobject]@{ Model = $entry.model; Direction = $entry.direction }
         }
     }
     return $null
+}
+
+function Test-KnownMeter {
+    param([string]$MeterName)
+    foreach ($entry in $allMeters) {
+        if ($MeterName -match $entry.pattern) { return $true }
+    }
+    return $false
 }
 
 # Usage quantity is expressed in the meter's own pricing unit, so a price of
@@ -148,9 +146,17 @@ $observed = foreach ($record in $models) {
     }
 }
 
-$unmapped = $observed | Where-Object { -not $_.Model } | Select-Object -ExpandProperty Meter -Unique
-if ($unmapped) {
-    Write-Warning "Unmapped meters (these will stay on retail rates until added to `$meterMap):"
+$unresolved = @($observed | Where-Object { -not $_.Model } | Select-Object -ExpandProperty Meter -Unique)
+$nonStandard = @($unresolved | Where-Object { Test-KnownMeter -MeterName $_ })
+$unmapped = @($unresolved | Where-Object { -not (Test-KnownMeter -MeterName $_) })
+if ($nonStandard.Count -gt 0) {
+    # Already in the map under a non-standard tier. Adding a second entry would
+    # produce two conflicting rates for one deployment.
+    Write-Host "`n    Skipped (non-standard rate tier, priced separately):" -ForegroundColor DarkGray
+    $nonStandard | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+}
+if ($unmapped.Count -gt 0) {
+    Write-Warning 'Unmapped meters (these stay on retail rates until added to observability\model-meter-map.json):'
     $unmapped | ForEach-Object { Write-Warning "  $_" }
 }
 

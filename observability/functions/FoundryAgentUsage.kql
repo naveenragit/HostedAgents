@@ -1,0 +1,113 @@
+// Per-request model usage and cost for Foundry hosted agents, attributed to the
+// platform user identity. Sourced entirely from Foundry tracing in Application
+// Insights plus billed rates; it reads no API Management data.
+//
+// Two signals are joined on the trace id (OperationId):
+//   * AppDependencies carries the gen_ai model-call span with token counts.
+//     The Foundry runtime emits it for Agent-Framework agents; the research
+//     agent records its own equivalent span because the raw responses adapter
+//     emits none.
+//   * AppTraces carries `user.id`, which the platform stamps onto every log
+//     record written inside a request scope. It is NOT present on spans, which
+//     is why the join exists at all.
+//
+// The user subquery is bounded and materialized here on purpose. A saved
+// function whose join is filtered from the outside (`FoundryAgentUsage | where
+// TimeGenerated > ago(1d)`) pushes that predicate into both branches and
+// silently empties the right-hand side, turning every row into 'unattributed'.
+let lookback = 30d;
+// Effective-dated rates in USD per 1M tokens. Regenerate with
+// scripts\sync-model-prices.ps1 and APPEND rows; editing a row re-prices
+// history, which defeats the point of dating them.
+let rates = datatable(
+    ModelName: string, ValidFrom: datetime,
+    InputUsdPerMTok: real, CachedInputUsdPerMTok: real, OutputUsdPerMTok: real,
+    RateSource: string)
+[
+    'gpt-5.4',                datetime(2026-08-04), 2.5,  0.25,  15.0, 'billed',
+    'gpt-5',                  datetime(2026-08-04), 1.25, 0.125, 10.0, 'billed',
+    'gpt-4.1',                datetime(2026-08-04), 2.0,  0.2,    8.0, 'billed',
+    'gpt-4o',                 datetime(2026-08-12), 2.5,  2.5,   10.0, 'billed',
+    'text-embedding-3-large', datetime(2026-08-05), 0.13, 0.13,   0.0, 'billed',
+    'gpt-5.1',                datetime(2026-08-12), 1.25, 0.125, 20.0, 'mixed',
+    'gpt-5-mini',             datetime(2026-08-12), 0.45, 0.045,  2.0, 'mixed',
+    'gpt-5.2',                datetime(2020-01-01), 3.5,  0.35,  28.0, 'retail',
+    'gpt-5.6-sol',            datetime(2020-01-01), 5.0,  0.5,   30.0, 'retail',
+    'gpt-5.6-luna',           datetime(2020-01-01), 1.0,  0.1,    6.0, 'retail',
+    'gpt-5-codex',            datetime(2020-01-01), 1.25, 0.125, 10.0, 'retail',
+    'gpt-chat-latest',        datetime(2020-01-01), 5.0,  0.5,   30.0, 'retail',
+    'grok-4',                 datetime(2020-01-01), 3.0,  3.0,   15.0, 'retail',
+    'text-embedding-3-small', datetime(2020-01-01), 0.02, 0.02,   0.0, 'retail'
+];
+let users = materialize(
+    AppTraces
+    | where TimeGenerated > ago(lookback)
+    | extend UserId = tostring(parse_json(Properties)['user.id'])
+    | where isnotempty(UserId)
+    // First record in the trace wins: one agent invocation serves one caller.
+    | summarize arg_min(TimeGenerated, UserId) by OperationId
+    | project OperationId, UserId
+);
+AppDependencies
+| where TimeGenerated > ago(lookback)
+| extend d = parse_json(Properties)
+| where isnotempty(tostring(d['gen_ai.usage.input_tokens']))
+    or isnotempty(tostring(d['gen_ai.usage.output_tokens']))
+| project
+    TimeGenerated,
+    OperationId,
+    SpanId          = Id,
+    Success,
+    DurationMs,
+    AgentName       = coalesce(tostring(d['gen_ai.agent.name']), AppRoleName),
+    AgentVersion    = tostring(d['gen_ai.agent.version']),
+    SessionId       = tostring(d['microsoft.session.id']),
+    ResponseId      = tostring(d['gen_ai.response.id']),
+    ModelDeployment = tostring(d['gen_ai.request.model']),
+    ModelVersion    = tostring(d['gen_ai.response.model']),
+    InputTokens     = toint(d['gen_ai.usage.input_tokens']),
+    OutputTokens    = toint(d['gen_ai.usage.output_tokens']),
+    CachedInputTokens = toint(d['gen_ai.usage.cache_read.input_tokens']),
+    ReasoningTokens = toint(d['gen_ai.usage.reasoning.output_tokens'])
+// Some agents request a dated snapshot (`gpt-5.4-2026-03-05`) rather than the
+// bare deployment name. Rates are keyed on the bare name, so the date suffix is
+// stripped before lookup; leaving it on reports real spend as 'unpriced'.
+| extend ModelName = trim_end(@'-\d{4}-\d{2}-\d{2}$', ModelDeployment)
+| extend
+    InputTokens       = coalesce(InputTokens, 0),
+    OutputTokens      = coalesce(OutputTokens, 0),
+    CachedInputTokens = coalesce(CachedInputTokens, 0),
+    ReasoningTokens   = coalesce(ReasoningTokens, 0)
+| join kind=leftouter users on OperationId
+| extend UserId = iff(isempty(UserId), 'unattributed', UserId)
+| join kind=leftouter rates on ModelName
+// A rate that is not yet in effect must neither price the row nor drop it, so
+// non-applicable candidates are blanked and ranked below the null-rate sentinel
+// instead of being filtered out.
+| extend RateApplies = isnotnull(ValidFrom) and ValidFrom <= TimeGenerated
+| extend
+    RateRank              = iff(RateApplies, ValidFrom, datetime(1800-01-01)),
+    InputUsdPerMTok       = iff(RateApplies, InputUsdPerMTok, real(null)),
+    CachedInputUsdPerMTok = iff(RateApplies, CachedInputUsdPerMTok, real(null)),
+    OutputUsdPerMTok      = iff(RateApplies, OutputUsdPerMTok, real(null)),
+    RateSource            = iff(RateApplies, RateSource, '')
+| summarize arg_max(RateRank, *) by SpanId
+| extend PriceKnown = isnotnull(InputUsdPerMTok)
+| extend RateSource = iff(PriceKnown, RateSource, 'unpriced')
+// Responses reports cached tokens inside the input total and reasoning tokens
+// inside the output total, so only the input side is net of its detail.
+| extend BillableInputTokens = max_of(InputTokens - CachedInputTokens, 0)
+| extend EstimatedCostUsd =
+    (toreal(BillableInputTokens) * coalesce(InputUsdPerMTok, 0.0)
+   + toreal(CachedInputTokens)   * coalesce(CachedInputUsdPerMTok, 0.0)
+   + toreal(OutputTokens)        * coalesce(OutputUsdPerMTok, 0.0)) / 1000000.0
+| extend CacheSavingsUsd =
+    (toreal(CachedInputTokens)
+   * (coalesce(InputUsdPerMTok, 0.0) - coalesce(CachedInputUsdPerMTok, 0.0))) / 1000000.0
+| extend TotalTokens = InputTokens + OutputTokens
+| project
+    TimeGenerated, UserId, AgentName, AgentVersion, ModelName, ModelDeployment, ModelVersion,
+    InputTokens, CachedInputTokens, BillableInputTokens,
+    OutputTokens, ReasoningTokens, TotalTokens,
+    EstimatedCostUsd, CacheSavingsUsd, RateSource, PriceKnown,
+    Success, DurationMs, OperationId, SpanId, SessionId, ResponseId

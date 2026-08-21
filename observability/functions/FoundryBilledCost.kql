@@ -1,0 +1,33 @@
+// What Azure actually billed for model meters, per meter and per day.
+//
+// Populated by the billing-sync timer function (backend/functions/billing-sync),
+// which runs daily and writes to the FoundryBilledCost_CL custom table. This is
+// the authoritative money in the cost report; FoundryAgentUsage supplies the
+// per-user split, and FoundryAgentCost reconciles one against the other.
+//
+// Each run re-reads a rolling window because billing restates recent days as
+// charges settle, so the same meter-day arrives more than once. The latest
+// ingestion wins; summing without this would inflate cost by the number of runs.
+//
+// The typed empty table keeps the schema stable before the first ingestion, so
+// the workbook reports no billed data rather than failing to run.
+let shape = datatable(
+    TimeGenerated: datetime, UsageDate: datetime, ModelName: string, Meter: string,
+    Direction: string, RateTier: string, BilledCostUsd: real, BilledTokens: real,
+    EffectivePriceUsd: real, UnitOfMeasure: string, ResourceName: string,
+    SubscriptionId: string)
+[];
+union isfuzzy=true
+    shape,
+    (
+        FoundryBilledCost_CL
+        | project
+            TimeGenerated, UsageDate, ModelName, Meter, Direction, RateTier,
+            BilledCostUsd, BilledTokens, EffectivePriceUsd, UnitOfMeasure,
+            ResourceName, SubscriptionId
+    )
+| summarize arg_max(TimeGenerated, *) by UsageDate, Meter, ResourceName
+| project
+    UsageDate, ModelName, Meter, Direction, RateTier,
+    BilledCostUsd, BilledTokens, EffectivePriceUsd, UnitOfMeasure,
+    ResourceName, SubscriptionId, IngestedAt = TimeGenerated

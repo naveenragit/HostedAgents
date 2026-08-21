@@ -55,11 +55,13 @@ try {
         'mypy (research-agent)'   = @('-m', 'mypy', 'backend\agents\research-agent')
         'mypy (triage-agent)'     = @('-m', 'mypy', 'backend\agents\triage-agent')
         'mypy (api)'              = @('-m', 'mypy', 'backend\api\app')
+        'mypy (billing-sync)'     = @('-m', 'mypy', 'backend\functions\billing-sync\billing_sync')
         'mypy (tests)'            = @('-m', 'mypy', 'backend\tests')
         'pytest'                  = @('-m', 'pytest')
         'pip-audit (research)'    = @('-m', 'pip_audit', '--strict', '-r', 'backend\agents\research-agent\requirements.txt')
         'pip-audit (triage)'      = @('-m', 'pip_audit', '--strict', '-r', 'backend\agents\triage-agent\requirements.txt')
         'pip-audit (api)'         = @('-m', 'pip_audit', '--strict', '-r', 'backend\api\requirements.txt')
+        'pip-audit (billing)'     = @('-m', 'pip_audit', '--strict', '-r', 'backend\functions\billing-sync\requirements.txt')
         'pip-audit (dev tooling)' = @('-m', 'pip_audit', '--strict', '-r', 'requirements-dev.txt')
     }
 

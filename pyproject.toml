@@ -22,7 +22,7 @@ packages = []
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["backend/agents/research-agent", "backend/agents/triage-agent", "backend/api", "backend/tests"]
+src = ["backend/agents/research-agent", "backend/agents/triage-agent", "backend/api", "backend/functions/billing-sync", "backend/tests"]
 extend-exclude = [".venv", "packages", "node_modules"]
 
 [tool.ruff.lint]
@@ -51,7 +51,7 @@ ignore = [
 "backend/tests/*" = ["S101", "ANN"]   # asserts and loose annotations are fine in tests
 
 [tool.ruff.lint.isort]
-known-first-party = ["app", "research_agent", "triage_agent"]
+known-first-party = ["app", "billing_sync", "research_agent", "triage_agent"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -69,7 +69,7 @@ warn_unreachable = true
 warn_unused_ignores = true
 disallow_any_generics = true
 no_implicit_reexport = true
-mypy_path = ["backend/agents/research-agent", "backend/agents/triage-agent", "backend/api"]
+mypy_path = ["backend/agents/research-agent", "backend/agents/triage-agent", "backend/api", "backend/functions/billing-sync"]
 exclude = ['\.venv', 'packages', 'node_modules']
 
 # The agent runtime SDKs are not installed in the root dev venv (see
@@ -92,7 +92,7 @@ ignore_missing_imports = true
 minversion = "8.0"
 testpaths = ["backend/tests"]
 addopts = "-ra --strict-markers --strict-config"
-pythonpath = ["backend/agents/research-agent", "backend/agents/triage-agent", "backend/api"]
+pythonpath = ["backend/agents/research-agent", "backend/agents/triage-agent", "backend/api", "backend/functions/billing-sync"]
 filterwarnings = ["error::DeprecationWarning"]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"

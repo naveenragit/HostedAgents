@@ -1,0 +1,15 @@
+# Billing-sync — Container Apps job, Python 3.12.
+#
+# Runs as a scheduled job rather than a Function App because every storage
+# account in the target subscription is governed to private-only access, and a
+# Function App cannot start without reachable storage. A job needs none.
+#
+# Keyless only: no connection strings or keys are used anywhere. Bounds are a
+# lower pin plus a next-major ceiling so an upstream breaking change cannot
+# silently reach a scheduled job that nobody is watching.
+#
+# Audit with `pip-audit` via scripts/check.ps1 before every deploy.
+
+azure-identity>=1.25.3,<2.0.0
+azure-mgmt-consumption>=10.0.0,<11.0.0
+azure-monitor-ingestion>=1.0.4,<2.0.0

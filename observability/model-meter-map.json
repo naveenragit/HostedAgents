@@ -1,0 +1,40 @@
+{
+  "$comment": [
+    "Maps a billed meter name to the model deployment it prices.",
+    "Billing names do not match deployment names and vary in casing and spacing between",
+    "model families, so this cannot be derived reliably. Add an entry whenever a new model",
+    "is deployed or a new tier is billed. A meter with no entry is reported as unmapped",
+    "rather than dropped, so billed cost stays complete.",
+    "",
+    "JSON rather than a PowerShell data file because both scripts/sync-model-prices.ps1 and",
+    "the Python billing-sync function read it, and it must not drift between them.",
+    "",
+    "tier separates rate variants of the same deployment. A long-context meter prices the",
+    "same deployment at a different rate, so it must not be used to derive that deployment's",
+    "standard rate, but it must still be counted in its billed total.",
+    "",
+    "pattern is a case-sensitive .NET/Python regex applied to the start of the meter name."
+  ],
+  "meters": [
+    { "pattern": "^5\\.4 inp Gl", "model": "gpt-5.4", "direction": "input", "tier": "standard" },
+    { "pattern": "^5\\.4 opt Gl", "model": "gpt-5.4", "direction": "output", "tier": "standard" },
+    { "pattern": "^5\\.4 cd inp Gl", "model": "gpt-5.4", "direction": "cachedInput", "tier": "standard" },
+    { "pattern": "^5\\.4 longco inp Gl", "model": "gpt-5.4", "direction": "input", "tier": "longContext" },
+    { "pattern": "^5\\.4 longco cd inp Gl", "model": "gpt-5.4", "direction": "cachedInput", "tier": "longContext" },
+    { "pattern": "^5\\.4 longco opt Gl", "model": "gpt-5.4", "direction": "output", "tier": "longContext" },
+    { "pattern": "^GPT 5 Inpt Glbl", "model": "gpt-5", "direction": "input", "tier": "standard" },
+    { "pattern": "^GPT 5 outpt Glbl", "model": "gpt-5", "direction": "output", "tier": "standard" },
+    { "pattern": "^GPT 5 Mini [Ii]npt Glbl", "model": "gpt-5-mini", "direction": "input", "tier": "standard" },
+    { "pattern": "^GPT 5 Mini outpt Glbl", "model": "gpt-5-mini", "direction": "output", "tier": "standard" },
+    { "pattern": "^GPT 5\\.1 inp Gl", "model": "gpt-5.1", "direction": "input", "tier": "standard" },
+    { "pattern": "^GPT 5\\.1 opt Gl", "model": "gpt-5.1", "direction": "output", "tier": "standard" },
+    { "pattern": "^GPT 5\\.2 inp Gl", "model": "gpt-5.2", "direction": "input", "tier": "standard" },
+    { "pattern": "^GPT 5\\.2 opt Gl", "model": "gpt-5.2", "direction": "output", "tier": "standard" },
+    { "pattern": "^gpt 4\\.1 Inp glbl", "model": "gpt-4.1", "direction": "input", "tier": "standard" },
+    { "pattern": "^gpt 4\\.1 Outp glbl", "model": "gpt-4.1", "direction": "output", "tier": "standard" },
+    { "pattern": "^gpt-4o-\\d+-Inp-glbl", "model": "gpt-4o", "direction": "input", "tier": "standard" },
+    { "pattern": "^gpt-4o-\\d+-Outp-glbl", "model": "gpt-4o", "direction": "output", "tier": "standard" },
+    { "pattern": "^text-embedding-3-large-glbl", "model": "text-embedding-3-large", "direction": "input", "tier": "standard" },
+    { "pattern": "^text-embedding-3-small-glbl", "model": "text-embedding-3-small", "direction": "input", "tier": "standard" }
+  ]
+}

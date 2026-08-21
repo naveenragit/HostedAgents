@@ -1,0 +1,73 @@
+// Daily reconciliation of allocated per-user cost against what Azure billed.
+//
+// FoundryAgentUsage prices each request from a billed unit rate, which is fast
+// and drills down to a single turn but cannot be right by construction. This
+// function is the correctness signal for it: for every model and day it puts the
+// telemetry-derived total next to the invoiced total and names the gap.
+//
+// Read Status before trusting any per-user figure:
+//   reconciled            - the two agree within tolerance
+//   pending billing       - traced in the last two days and the meter has not
+//                           billed yet; normal, and never a zero-cost day
+//   unbilled              - traced inside the billed window but no meter billed,
+//                           which usually means the meter map is missing an entry
+//   outside billed window - older than anything FoundryBilledCost covers, so no
+//                           verdict is possible; widen BILLING_LOOKBACK_DAYS on
+//                           the billing-sync function to extend it
+//   untraced              - Azure billed for model usage that produced no gen_ai
+//                           span, so it cannot be attributed to any user
+//   unpriced              - no rate applied, so allocation is understated until
+//                           scripts\sync-model-prices.ps1 is rerun
+//   divergent             - the two disagree beyond tolerance; the rate table or
+//                           the meter map is wrong and per-user cost is not
+//                           trustworthy
+//
+// Factor is the multiplier that would make allocation tie out. Apply it to a
+// per-user total when you need a chargeback figure that sums to the invoice.
+let tolerance = 0.01;
+// Billing lags usage, so a day this recent is expected to be missing a bill.
+let billingLag = 2d;
+let billedFrom = toscalar(FoundryBilledCost | summarize min(UsageDate));
+let allocated = FoundryAgentUsage
+    | summarize
+        Requests      = count(),
+        Users         = dcount(UserId),
+        Unattributed  = countif(UserId == 'unattributed'),
+        Unpriced      = countif(not(PriceKnown)),
+        TracedTokens  = sum(TotalTokens),
+        AllocatedUsd  = sum(EstimatedCostUsd)
+      by ModelName, UsageDate = startofday(TimeGenerated);
+let billed = FoundryBilledCost
+    | summarize BilledUsd = sum(BilledCostUsd), BilledTokens = sum(BilledTokens)
+      by ModelName, UsageDate;
+allocated
+| join kind=fullouter billed on ModelName, UsageDate
+| extend
+    ModelName = coalesce(ModelName, ModelName1),
+    UsageDate = coalesce(UsageDate, UsageDate1)
+| extend
+    Requests     = coalesce(Requests, 0),
+    Users        = coalesce(Users, 0),
+    Unattributed = coalesce(Unattributed, 0),
+    Unpriced     = coalesce(Unpriced, 0),
+    TracedTokens = coalesce(TracedTokens, 0),
+    AllocatedUsd = coalesce(AllocatedUsd, 0.0),
+    BilledUsd    = coalesce(BilledUsd, 0.0),
+    BilledTokens = coalesce(BilledTokens, 0.0)
+| extend DeltaUsd = AllocatedUsd - BilledUsd
+| extend Factor = iff(AllocatedUsd > 0.0, BilledUsd / AllocatedUsd, real(null))
+| extend Status = case(
+    AllocatedUsd == 0.0 and Unpriced > 0, 'unpriced',
+    isnotnull(billedFrom) and UsageDate < billedFrom, 'outside billed window',
+    BilledUsd == 0.0 and AllocatedUsd > 0.0 and UsageDate >= startofday(ago(billingLag)), 'pending billing',
+    BilledUsd == 0.0 and AllocatedUsd > 0.0, 'unbilled',
+    AllocatedUsd == 0.0 and BilledUsd > 0.0, 'untraced',
+    Unpriced > 0, 'partly unpriced',
+    abs(DeltaUsd) <= tolerance * BilledUsd, 'reconciled',
+    'divergent')
+| project
+    UsageDate, ModelName, Status,
+    Requests, Users, Unattributed, Unpriced,
+    TracedTokens, BilledTokens,
+    AllocatedUsd, BilledUsd, DeltaUsd, Factor
+| sort by UsageDate desc, BilledUsd desc

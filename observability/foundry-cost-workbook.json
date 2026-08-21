@@ -1,0 +1,437 @@
+{
+  "version": "Notebook/1.0",
+  "isLocked": false,
+  "items": [
+    {
+      "type": 1,
+      "name": "header",
+      "content": {
+        "json": "# Foundry hosted agents - per-user cost\n\nPer-user token consumption and chargeback built from **Foundry tracing in Application Insights** and **Azure billing**. It reads no API Management data, so it covers every agent in the project whether or not its traffic is routed through a gateway.\n\nRead the **Reconciliation** section before quoting any figure. Cost here is derived from telemetry and is only trustworthy where it ties out against the invoice."
+      }
+    },
+    {
+      "type": 9,
+      "name": "parameters",
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "style": "pills",
+        "queryType": 0,
+        "parameters": [
+          {
+            "id": "fp-timerange",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 604800000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 259200000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ]
+            }
+          },
+          {
+            "id": "fp-userid",
+            "version": "KqlParameterItem/1.0",
+            "name": "UserId",
+            "label": "User",
+            "type": 2,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "isRequired": true,
+            "query": "FoundryAgentUsage | where TimeGenerated {TimeRange} | distinct UserId | union (print UserId = '*') | order by UserId asc",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "__LOG_ANALYTICS_WORKSPACE_ID__"
+            ],
+            "value": [
+              "*"
+            ]
+          },
+          {
+            "id": "fp-agent",
+            "version": "KqlParameterItem/1.0",
+            "name": "AgentName",
+            "label": "Agent",
+            "type": 2,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "isRequired": true,
+            "query": "FoundryAgentUsage | where TimeGenerated {TimeRange} | distinct AgentName | union (print AgentName = '*') | order by AgentName asc",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "__LOG_ANALYTICS_WORKSPACE_ID__"
+            ],
+            "value": [
+              "*"
+            ]
+          },
+          {
+            "id": "fp-model",
+            "version": "KqlParameterItem/1.0",
+            "name": "ModelName",
+            "label": "Model",
+            "type": 2,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "isRequired": true,
+            "query": "FoundryAgentUsage | where TimeGenerated {TimeRange} | distinct ModelName | union (print ModelName = '*') | order by ModelName asc",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "__LOG_ANALYTICS_WORKSPACE_ID__"
+            ],
+            "value": [
+              "*"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-summary",
+      "content": {
+        "json": "## Executive summary"
+      }
+    },
+    {
+      "type": 3,
+      "name": "kpis",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Headline metrics for the selected range",
+        "query": "FoundryAgentUsage | where TimeGenerated {TimeRange} | where '*' in ({UserId}) or UserId in ({UserId}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize Requests = count(), ActiveUsers = dcountif(UserId, UserId != 'unattributed'), InputTokens = sum(InputTokens), CachedInputTokens = sum(CachedInputTokens), OutputTokens = sum(OutputTokens), TotalTokens = sum(TotalTokens), CostUsd = sum(EstimatedCostUsd), SuccessRatePct = round(100.0 * countif(Success) / count(), 2), P95LatencyMs = round(percentile(DurationMs, 95), 0) | extend CostPerRequestUsd = round(CostUsd / todouble(Requests), 6), TokensPerRequest = round(todouble(TotalTokens) / todouble(Requests), 0), CacheHitPct = iff(InputTokens > 0, round(100.0 * todouble(CachedInputTokens) / todouble(InputTokens), 2), 0.0), CostUsd = round(CostUsd, 4) | project Requests, ActiveUsers, TotalTokens, CostUsd, CostPerRequestUsd, TokensPerRequest, CacheHitPct, SuccessRatePct, P95LatencyMs | extend kv = pack_all() | mv-expand kind = array kv | project Metric = tostring(kv[0]), Value = tostring(kv[1])",
+        "size": 3,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-reconcile",
+      "content": {
+        "json": "## Reconciliation against the invoice\n\nThe trust gate for everything else in this report. Each row compares the cost allocated from telemetry against what Azure actually billed for that model and day.\n\n`reconciled` means the two agree. `untraced` means Azure billed for model usage that produced no trace, so **it cannot be attributed to any user** - that spend is invisible to every per-user panel below. `pending billing` is normal for the last day. `divergent` means the rate table or meter map is wrong.\n\n`Factor` is the multiplier that makes allocation tie out; the chargeback table applies it."
+      }
+    },
+    {
+      "type": 3,
+      "name": "reconciliation",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Allocated cost vs billed cost, per model per day",
+        "query": "FoundryAgentCost | where UsageDate {TimeRange} | where '*' in ({ModelName}) or ModelName in ({ModelName}) | project UsageDate, ModelName, Status, Requests, Users, Unattributed, Unpriced, TracedTokens, BilledTokens, AllocatedUsd = round(AllocatedUsd, 6), BilledUsd = round(BilledUsd, 6), DeltaUsd = round(DeltaUsd, 6), Factor = round(Factor, 4) | order by UsageDate desc, BilledUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Status",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  {
+                    "operator": "==",
+                    "thresholdValue": "reconciled",
+                    "representation": "green",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "pending billing",
+                    "representation": "gray",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "outside billed window",
+                    "representation": "gray",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "untraced",
+                    "representation": "orange",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "unbilled",
+                    "representation": "orange",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "Default",
+                    "representation": "red",
+                    "text": "{0}{1}"
+                  }
+                ]
+              }
+            },
+            {
+              "columnMatch": "DeltaUsd",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "redBright"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "attribution-coverage",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "How much of the bill can actually be charged back",
+        "query": "FoundryAgentCost | where UsageDate {TimeRange} | summarize BilledUsd = sum(BilledUsd), AllocatedUsd = sum(AllocatedUsd), UntracedUsd = sumif(BilledUsd, Status == 'untraced'), PendingUsd = sumif(AllocatedUsd, Status in ('pending billing', 'unbilled', 'outside billed window')) | extend AttributableSharePct = iff(BilledUsd > 0.0, round(100.0 * (BilledUsd - UntracedUsd) / BilledUsd, 2), 0.0) | project BilledUsd = round(BilledUsd, 4), AllocatedUsd = round(AllocatedUsd, 4), UntracedUsd = round(UntracedUsd, 4), NotYetBilledUsd = round(PendingUsd, 4), AttributableSharePct | extend kv = pack_all() | mv-expand kind = array kv | project Metric = tostring(kv[0]), Value = tostring(kv[1])",
+        "size": 3,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-chargeback",
+      "content": {
+        "json": "## Chargeback\n\n`AllocatedUsd` prices each request from the billed unit rate. `ChargebackUsd` additionally applies the daily reconciliation factor, so it sums to the invoice for every day that reconciled. Use `ChargebackUsd` for billing someone; use `AllocatedUsd` to understand behaviour."
+      }
+    },
+    {
+      "type": 3,
+      "name": "per-user",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Consumption and cost per user",
+        "query": "let factors = FoundryAgentCost | project ModelName, UsageDate, Factor; let scoped = FoundryAgentUsage | where TimeGenerated {TimeRange} | where '*' in ({UserId}) or UserId in ({UserId}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | extend UsageDate = startofday(TimeGenerated) | lookup kind=leftouter factors on ModelName, UsageDate | extend ChargebackUsd = EstimatedCostUsd * coalesce(Factor, 1.0); let total = toscalar(scoped | summarize sum(ChargebackUsd)); scoped | summarize Requests = count(), Agents = dcount(AgentName), Models = dcount(ModelName), InputTokens = sum(InputTokens), CachedInputTokens = sum(CachedInputTokens), OutputTokens = sum(OutputTokens), TotalTokens = sum(TotalTokens), AllocatedUsd = sum(EstimatedCostUsd), ChargebackUsd = sum(ChargebackUsd) by UserId | extend SharePct = iff(total > 0.0, round(100.0 * ChargebackUsd / total, 2), 0.0), CostPerRequestUsd = round(ChargebackUsd / todouble(Requests), 6), CacheHitPct = iff(InputTokens > 0, round(100.0 * todouble(CachedInputTokens) / todouble(InputTokens), 2), 0.0) | project UserId, Requests, Agents, Models, TotalTokens, InputTokens, OutputTokens, CacheHitPct, AllocatedUsd = round(AllocatedUsd, 6), ChargebackUsd = round(ChargebackUsd, 6), SharePct, CostPerRequestUsd | order by ChargebackUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "SharePct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "blue"
+              }
+            },
+            {
+              "columnMatch": "ChargebackUsd",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "green"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "cost-over-time",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Cost over time by user",
+        "query": "FoundryAgentUsage | where TimeGenerated {TimeRange} | where '*' in ({UserId}) or UserId in ({UserId}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize CostUsd = sum(EstimatedCostUsd) by bin(TimeGenerated, {TimeRange:grain}), UserId | order by TimeGenerated asc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "barchart"
+      }
+    },
+    {
+      "type": 3,
+      "name": "per-agent-model",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Consumption and cost per agent and model",
+        "query": "FoundryAgentUsage | where TimeGenerated {TimeRange} | where '*' in ({UserId}) or UserId in ({UserId}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize Requests = count(), Users = dcountif(UserId, UserId != 'unattributed'), InputTokens = sum(InputTokens), OutputTokens = sum(OutputTokens), TotalTokens = sum(TotalTokens), CostUsd = sum(EstimatedCostUsd) by AgentName, ModelName, RateSource | extend CostPerRequestUsd = round(CostUsd / todouble(Requests), 6), TokensPerRequest = round(todouble(TotalTokens) / todouble(Requests), 0), CostUsd = round(CostUsd, 6) | order by CostUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-session",
+      "content": {
+        "json": "## Cost per conversation\n\nOnly possible from tracing: a gateway sees isolated model calls, but a trace groups the turns of one session. Useful for spotting a single runaway conversation rather than a runaway user."
+      }
+    },
+    {
+      "type": 3,
+      "name": "per-session",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Most expensive conversations",
+        "query": "FoundryAgentUsage | where TimeGenerated {TimeRange} | where '*' in ({UserId}) or UserId in ({UserId}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where isnotempty(SessionId) | summarize ModelCalls = count(), Turns = dcount(OperationId), TotalTokens = sum(TotalTokens), CostUsd = sum(EstimatedCostUsd), FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated), UserId = take_any(UserId) by SessionId, AgentName | extend DurationMin = round(todouble(datetime_diff('second', LastSeen, FirstSeen)) / 60.0, 1), CostPerTurnUsd = round(CostUsd / todouble(Turns), 6), CostUsd = round(CostUsd, 6) | project FirstSeen, UserId, AgentName, Turns, ModelCalls, TotalTokens, CostUsd, CostPerTurnUsd, DurationMin, SessionId | order by CostUsd desc | take 100",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-efficiency",
+      "content": {
+        "json": "## Efficiency\n\nCached input bills at roughly a tenth of standard input, and reasoning tokens bill as output while never being shown to the user. Both are per-user levers."
+      }
+    },
+    {
+      "type": 3,
+      "name": "efficiency",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Cache hit rate and reasoning overhead per user",
+        "query": "FoundryAgentUsage | where TimeGenerated {TimeRange} | where '*' in ({UserId}) or UserId in ({UserId}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | summarize Requests = count(), InputTokens = sum(InputTokens), CachedInputTokens = sum(CachedInputTokens), OutputTokens = sum(OutputTokens), ReasoningTokens = sum(ReasoningTokens), CacheSavingsUsd = sum(CacheSavingsUsd) by UserId, AgentName | extend CacheHitPct = iff(InputTokens > 0, round(100.0 * todouble(CachedInputTokens) / todouble(InputTokens), 2), 0.0), ReasoningSharePct = iff(OutputTokens > 0, round(100.0 * todouble(ReasoningTokens) / todouble(OutputTokens), 2), 0.0), VisibleOutputTokens = OutputTokens - ReasoningTokens, CacheSavingsUsd = round(CacheSavingsUsd, 6) | project UserId, AgentName, Requests, InputTokens, CachedInputTokens, CacheHitPct, CacheSavingsUsd, OutputTokens, ReasoningTokens, VisibleOutputTokens, ReasoningSharePct | order by CacheSavingsUsd desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-quality",
+      "content": {
+        "json": "## Data quality and coverage\n\nEvery figure above is only as good as these. `Unattributed` requests emitted a token span but no user identity, so they cannot be charged to anyone. `Unpriced` requests are counted as zero dollars, which understates cost."
+      }
+    },
+    {
+      "type": 3,
+      "name": "data-quality",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Coverage and trust indicators",
+        "query": "FoundryAgentUsage | where TimeGenerated {TimeRange} | summarize Requests = count(), Unattributed = countif(UserId == 'unattributed'), UnpricedRequests = countif(not(PriceKnown)), RetailPriced = countif(RateSource == 'retail'), ZeroTokenRequests = countif(TotalTokens == 0), FailedRequests = countif(not(Success)) | extend UnattributedPct = round(100.0 * todouble(Unattributed) / todouble(Requests), 2), UnpricedPct = round(100.0 * todouble(UnpricedRequests) / todouble(Requests), 2), RetailPricedPct = round(100.0 * todouble(RetailPriced) / todouble(Requests), 2)",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "UnattributedPct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "red"
+              }
+            },
+            {
+              "columnMatch": "UnpricedPct",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "orange"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "recent-requests",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Request audit trail (no prompt or completion content)",
+        "query": "FoundryAgentUsage | where TimeGenerated {TimeRange} | where '*' in ({UserId}) or UserId in ({UserId}) | where '*' in ({AgentName}) or AgentName in ({AgentName}) | where '*' in ({ModelName}) or ModelName in ({ModelName}) | project TimeGenerated, UserId, AgentName, AgentVersion, ModelName, ModelVersion, InputTokens, CachedInputTokens, OutputTokens, ReasoningTokens, TotalTokens, EstimatedCostUsd = round(EstimatedCostUsd, 6), RateSource, Success, DurationMs, OperationId, SessionId | order by TimeGenerated desc | take 200",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 1,
+      "name": "t-about",
+      "content": {
+        "json": "## About this report\n\n| Source | What it provides | Granularity |\n| --- | --- | --- |\n| `AppDependencies` gen_ai spans | Token counts, model, agent, latency, outcome. Emitted by the Foundry runtime for Agent-Framework agents; the research agent records its own equivalent span because the raw responses adapter emits none. | Per model call |\n| `AppTraces` `user.id` | The user identity. Foundry stamps it onto every log record written inside a request scope. It is **not** present on spans, which is why the two are joined on `OperationId`. | Per request |\n| **Cost Management** (`Microsoft.Consumption/usageDetails`) | The money. Billed cost and billed unit price per meter per day. Ingested daily into `FoundryBilledCost_CL` by the `billing-sync` timer function; rates are refreshed by `scripts\\sync-model-prices.ps1`. | Per meter per day |\n\n**Token quantities are never taken from billing, and money is never taken from telemetry.** Billing carries no user dimension, so it cannot attribute cost on its own; telemetry carries no price, so it cannot value anything on its own.\n\n**Why a user can be missing.** Agents that write no log record inside the request scope (portal playground sessions, some built-in agents) produce token spans with no `user.id`. They appear as `unattributed` rather than being dropped.\n\n**Why spend can be missing.** Model usage that produces no trace at all is invisible here and shows as `untraced` in the reconciliation table. Check that panel before assuming the report covers the whole bill.\n\nNo prompts or completions are read by any query in this workbook."
+      }
+    },
+    {
+      "type": 3,
+      "name": "data-as-of",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Freshness of every source",
+        "query": "let spans = AppDependencies | where TimeGenerated > ago(30d) | where isnotempty(tostring(parse_json(Properties)['gen_ai.usage.input_tokens'])) | summarize Latest = max(TimeGenerated), Items = count() | extend Source = '1. Token counts (Foundry gen_ai spans)', Kind = 'telemetry'; let ids = AppTraces | where TimeGenerated > ago(30d) | where isnotempty(tostring(parse_json(Properties)['user.id'])) | summarize Latest = max(TimeGenerated), Items = count() | extend Source = '2. User attribution (platform user.id)', Kind = 'telemetry'; let bill = FoundryBilledCost | summarize Latest = max(UsageDate), Items = dcount(Meter) | extend Source = '3. Billed cost (Cost Management, via sync script)', Kind = 'billing'; union spans, ids, bill | extend AgeMinutes = round(todouble(datetime_diff('minute', now(), Latest)), 0) | extend AgeDays = round(AgeMinutes / 1440.0, 1) | extend Freshness = case(Kind == 'billing' and AgeDays <= 2.0, 'current - billing lags usage by about a day', Kind == 'billing', 'stale - rerun sync-billed-cost.ps1', AgeMinutes <= 15.0, 'current', AgeMinutes <= 120.0, 'slightly behind', 'no recent traffic, or ingestion delayed') | project Source, DataAsOfUtc = Latest, AgeDays, Items, Freshness | order by Source asc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__LOG_ANALYTICS_WORKSPACE_ID__"
+        ],
+        "visualization": "table"
+      }
+    }
+  ],
+  "fallbackResourceIds": [
+    "__APP_INSIGHTS_RESOURCE_ID__"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

@@ -29,11 +29,18 @@
     Target subscription. Defaults to the current Azure CLI subscription.
 
 .PARAMETER WorkbookId
-    Workbook resource name, which must be a GUID. Keep the default to update the
-    existing workbook; supply a new GUID to deploy an independent copy.
+    Workbook resource name, which must be a GUID. Only valid when -Workbook
+    selects a single workbook. Keep the default to update the existing workbook;
+    supply a new GUID to deploy an independent copy.
+
+.PARAMETER Workbook
+    Which workbook to deploy. `apim` is the API Management gateway report;
+    `foundry` is the per-user cost report built from Foundry tracing and
+    billing. Defaults to both. The saved functions for both are always deployed
+    together, because a workbook without its functions is useless.
 
 .PARAMETER FunctionsOnly
-    Deploy only the saved functions and leave the workbook untouched.
+    Deploy only the saved functions and leave the workbooks untouched.
 
 .EXAMPLE
     .\scripts\deploy-workbook.ps1 -ResourceGroup rg-observability -WorkspaceName my-workspace -AppInsightsName my-appinsights
@@ -51,8 +58,11 @@ param(
 
     [string]$SubscriptionId,
 
+    [ValidateSet('all', 'apim', 'foundry')]
+    [string]$Workbook = 'all',
+
     [ValidatePattern('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')]
-    [string]$WorkbookId = 'a7f3c1d2-9b64-4e8a-8c17-6f2d5b0e91aa',
+    [string]$WorkbookId,
 
     [switch]$FunctionsOnly
 )
@@ -60,13 +70,38 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+if ($WorkbookId -and $Workbook -eq 'all') {
+    throw 'Pass -Workbook apim or -Workbook foundry when overriding -WorkbookId, otherwise both workbooks would be written to the same resource.'
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $observability = Join-Path $repoRoot 'observability'
-$templatePath = Join-Path $observability 'hosted-agents-workbook.json'
 $functionsPath = Join-Path $observability 'functions'
 
-if (-not (Test-Path $templatePath)) {
-    throw "Workbook template not found at $templatePath."
+$catalog = @(
+    [pscustomobject]@{
+        Key         = 'apim'
+        Template    = Join-Path $observability 'hosted-agents-workbook.json'
+        Id          = 'a7f3c1d2-9b64-4e8a-8c17-6f2d5b0e91aa'
+        DisplayName = 'Hosted agent model consumption and cost'
+    }
+    [pscustomobject]@{
+        Key         = 'foundry'
+        Template    = Join-Path $observability 'foundry-cost-workbook.json'
+        Id          = 'b4e91d67-2a38-4c05-9f1e-7d3a86b2c410'
+        DisplayName = 'Foundry hosted agents - per-user cost'
+    }
+)
+
+$selected = @($catalog | Where-Object { $Workbook -eq 'all' -or $_.Key -eq $Workbook })
+if ($WorkbookId) {
+    $selected[0].Id = $WorkbookId
+}
+
+foreach ($entry in $selected) {
+    if (-not (Test-Path $entry.Template)) {
+        throw "Workbook template not found at $($entry.Template)."
+    }
 }
 if (-not (Test-Path $functionsPath)) {
     throw "Function definitions not found at $functionsPath."
@@ -135,51 +170,54 @@ foreach ($file in Get-ChildItem -Path $functionsPath -Filter '*.kql' | Sort-Obje
 }
 
 if ($FunctionsOnly) {
-    Write-Host 'Functions deployed. Workbook skipped (-FunctionsOnly).' -ForegroundColor Green
+    Write-Host 'Functions deployed. Workbooks skipped (-FunctionsOnly).' -ForegroundColor Green
     return
 }
 
-Write-Host '==> Deploying workbook' -ForegroundColor Cyan
-$serialized = (Get-Content -Raw -Path $templatePath).
-    Replace('__LOG_ANALYTICS_WORKSPACE_ID__', $workspaceId).
-    Replace('__APP_INSIGHTS_RESOURCE_ID__', $appInsightsId)
+foreach ($entry in $selected) {
+    Write-Host "==> Deploying workbook: $($entry.DisplayName)" -ForegroundColor Cyan
+    $serialized = (Get-Content -Raw -Path $entry.Template).
+        Replace('__LOG_ANALYTICS_WORKSPACE_ID__', $workspaceId).
+        Replace('__APP_INSIGHTS_RESOURCE_ID__', $appInsightsId)
 
-if ($serialized -match '__[A-Z_]+__') {
-    throw "Unsubstituted placeholder remains in the workbook template: $($Matches[0])"
-}
-
-# Parse before sending: ARM accepts malformed content and the failure only shows
-# up as an unreadable workbook in the portal.
-try {
-    $null = $serialized | ConvertFrom-Json
-}
-catch {
-    throw "Workbook template is not valid JSON after substitution: $($_.Exception.Message)"
-}
-
-$workbookBody = @{
-    location   = $location
-    kind       = 'shared'
-    properties = @{
-        displayName    = 'Hosted agent model consumption and cost'
-        serializedData = $serialized
-        version        = 'Notebook/1.0'
-        category       = 'workbook'
-        # Lowercase: the portal matches the gallery on an exact string compare,
-        # and a mixed-case ID hides the workbook from the resource's list.
-        sourceId       = $appInsightsId.ToLowerInvariant()
+    if ($serialized -match '__[A-Z_]+__') {
+        throw "Unsubstituted placeholder remains in $($entry.Template): $($Matches[0])"
     }
-} | ConvertTo-Json -Depth 8 -Compress
 
-$workbookPath = Join-Path ([System.IO.Path]::GetTempPath()) 'workbook-deploy.json'
-$workbookBody | Set-Content -Path $workbookPath -Encoding utf8 -NoNewline
+    # Parse before sending: ARM accepts malformed content and the failure only
+    # shows up as an unreadable workbook in the portal.
+    try {
+        $null = $serialized | ConvertFrom-Json
+    }
+    catch {
+        throw "$($entry.Template) is not valid JSON after substitution: $($_.Exception.Message)"
+    }
 
-if ($PSCmdlet.ShouldProcess($WorkbookId, 'Deploy workbook')) {
-    $response = Invoke-Arm -Method put `
-        -Url "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Insights/workbooks/$WorkbookId" `
-        -ApiVersion '2023-06-01' -BodyPath $workbookPath | ConvertFrom-Json
-    Write-Host "    revision $($response.properties.revision)" -ForegroundColor DarkGray
+    $workbookBody = @{
+        location   = $location
+        kind       = 'shared'
+        properties = @{
+            displayName    = $entry.DisplayName
+            serializedData = $serialized
+            version        = 'Notebook/1.0'
+            category       = 'workbook'
+            # Lowercase: the portal matches the gallery on an exact string
+            # compare, and a mixed-case ID hides the workbook from the
+            # resource's list.
+            sourceId       = $appInsightsId.ToLowerInvariant()
+        }
+    } | ConvertTo-Json -Depth 8 -Compress
+
+    $workbookPath = Join-Path ([System.IO.Path]::GetTempPath()) "workbook-deploy-$($entry.Key).json"
+    $workbookBody | Set-Content -Path $workbookPath -Encoding utf8 -NoNewline
+
+    if ($PSCmdlet.ShouldProcess($entry.Id, 'Deploy workbook')) {
+        $response = Invoke-Arm -Method put `
+            -Url "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Insights/workbooks/$($entry.Id)" `
+            -ApiVersion '2023-06-01' -BodyPath $workbookPath | ConvertFrom-Json
+        Write-Host "    revision $($response.properties.revision)" -ForegroundColor DarkGray
+    }
+    Remove-Item -Path $workbookPath -ErrorAction SilentlyContinue
 }
-Remove-Item -Path $workbookPath -ErrorAction SilentlyContinue
 
-Write-Host 'Done. Open Application Insights > Workbooks to view it.' -ForegroundColor Green
+Write-Host 'Done. Open Application Insights > Workbooks to view them.' -ForegroundColor Green
