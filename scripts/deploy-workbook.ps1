@@ -3,15 +3,18 @@
     Deploys the versioned Azure Monitor workbook and its saved KQL functions.
 
 .DESCRIPTION
-    The workbook and the two functions it depends on live only in Azure once
+    The workbooks and the saved functions they depend on live only in Azure once
     deployed, which makes them easy to lose and impossible to review. This script
     restores them from the definitions under `observability\`.
 
-    The committed workbook is a template: workspace and Application Insights
+    The committed workbooks are templates: workspace and Application Insights
     resource IDs are replaced with placeholders so no environment identifiers are
     stored in source control. They are resolved from the names passed in here.
 
-    The workbook is useless without its functions, so both are deployed together.
+    A workbook is useless without its functions, so each workbook's functions are
+    deployed with it. Only the selected workbook's functions are touched, so
+    deploying one report cannot overwrite the other's queries.
+
     Deploying is idempotent: the same workbook ID is updated in place rather than
     creating a duplicate.
 
@@ -36,11 +39,12 @@
 .PARAMETER Workbook
     Which workbook to deploy. `apim` is the API Management gateway report;
     `foundry` is the per-user cost report built from Foundry tracing and
-    billing. Defaults to both. The saved functions for both are always deployed
-    together, because a workbook without its functions is useless.
+    billing. Defaults to both. Each workbook's saved functions are deployed with
+    it and only with it.
 
 .PARAMETER FunctionsOnly
-    Deploy only the saved functions and leave the workbooks untouched.
+    Deploy only the selected workbook's saved functions and leave the workbooks
+    untouched.
 
 .EXAMPLE
     .\scripts\deploy-workbook.ps1 -ResourceGroup rg-observability -WorkspaceName my-workspace -AppInsightsName my-appinsights
@@ -84,12 +88,14 @@ $catalog = @(
         Template    = Join-Path $observability 'hosted-agents-workbook.json'
         Id          = 'a7f3c1d2-9b64-4e8a-8c17-6f2d5b0e91aa'
         DisplayName = 'Hosted agent model consumption and cost'
+        Functions   = @('HostedAgentModelUsage', 'HostedAgentTokenCategories')
     }
     [pscustomobject]@{
         Key         = 'foundry'
         Template    = Join-Path $observability 'foundry-cost-workbook.json'
         Id          = 'b4e91d67-2a38-4c05-9f1e-7d3a86b2c410'
         DisplayName = 'Foundry hosted agents - per-user cost'
+        Functions   = @('FoundryAgentUsage', 'FoundryBilledCost', 'FoundryAgentCost')
     }
 )
 
@@ -145,8 +151,24 @@ Write-Host "    Application Insights: $AppInsightsName ($location)" -ForegroundC
 Write-Host "    Workspace           : $WorkspaceName" -ForegroundColor DarkGray
 
 Write-Host '==> Deploying saved functions' -ForegroundColor Cyan
-foreach ($file in Get-ChildItem -Path $functionsPath -Filter '*.kql' | Sort-Object Name) {
+# Only the selected workbook's functions are deployed. Deploying all of them
+# would let `-Workbook foundry` silently overwrite the API Management functions
+# with whatever this checkout happens to contain.
+$wanted = @($selected | ForEach-Object { $_.Functions } | Sort-Object -Unique)
+$available = @(Get-ChildItem -Path $functionsPath -Filter '*.kql' | Sort-Object Name)
+
+$orphans = @($available |
+        Where-Object { $catalog.Functions -notcontains [System.IO.Path]::GetFileNameWithoutExtension($_.Name) } |
+        ForEach-Object { $_.Name })
+if ($orphans.Count -gt 0) {
+    # A function file nobody claims would otherwise never deploy, and the
+    # workbook referencing it would fail with no clue why.
+    Write-Warning "Not deployed - no workbook in the catalog claims these: $($orphans -join ', ')"
+}
+
+foreach ($file in $available) {
     $alias = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+    if ($wanted -notcontains $alias) { continue }
     $query = Get-Content -Raw -Path $file.FullName
 
     $body = @{

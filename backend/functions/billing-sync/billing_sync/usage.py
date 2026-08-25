@@ -86,6 +86,7 @@ def aggregate(
     rows: dict[tuple[str, str, str], BilledRow] = {}
     scanned = 0
     unmapped: set[str] = set()
+    excluded_accounts: set[str] = set()
 
     for record in records:
         scanned += 1
@@ -104,6 +105,7 @@ def aggregate(
 
         resource_name = _as_str(getattr(record, "instance_name", "")).rsplit("/", 1)[-1]
         if account_name and resource_name != account_name:
+            excluded_accounts.add(resource_name)
             continue
 
         meter = _as_str(getattr(record, "meter_name", ""))
@@ -152,6 +154,17 @@ def aggregate(
         )
 
     ordered = sorted(rows.values(), key=lambda r: (r.usage_date, r.model_name, r.meter))
+
+    if not ordered and excluded_accounts:
+        # A misspelled account filter and "billing has not landed yet" both look
+        # like an empty table, so the difference is called out explicitly.
+        _LOGGER.error(
+            "account filter %r matched nothing. Billed meters were found for: %s. "
+            "Correct BILLING_ACCOUNT_NAME or unset it to ingest every account.",
+            account_name,
+            ", ".join(sorted(excluded_accounts)),
+        )
+
     _LOGGER.info("scanned %d usage record(s), produced %d billed row(s)", scanned, len(ordered))
     return ordered
 

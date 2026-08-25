@@ -177,7 +177,11 @@ $observed |
     Sort-Object Model, Direction |
     Format-Table -AutoSize
 
-Write-Host "==> KQL rows for the rates datatable in HostedAgentModelUsage" -ForegroundColor Cyan
+Write-Host "`n==> KQL rows for the rates datatable" -ForegroundColor Cyan
+Write-Host "    Paste into the 'rates' datatable in BOTH saved functions that price" -ForegroundColor DarkGray
+Write-Host "    requests, which share this row shape:" -ForegroundColor DarkGray
+Write-Host "      observability\functions\FoundryAgentUsage.kql    (Foundry tracing report)" -ForegroundColor DarkGray
+Write-Host "      observability\functions\HostedAgentModelUsage.kql (API Management report)" -ForegroundColor DarkGray
 Write-Host "    Append new rows rather than editing existing ones. Editing a rate" -ForegroundColor DarkGray
 Write-Host "    rewrites history; appending an effective-dated row does not." -ForegroundColor DarkGray
 

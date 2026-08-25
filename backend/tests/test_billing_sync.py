@@ -6,6 +6,7 @@ unit-conversion mistake here silently misstates every per-user figure.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -213,6 +214,31 @@ def test_separates_long_context_from_standard_tier() -> None:
     assert tiers == {"standard", "longContext"}
     # Both belong to the same deployment and must both count toward its bill.
     assert {row.model_name for row in rows} == {"gpt-5.4"}
+
+
+def test_reports_an_account_filter_that_matched_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A misspelled filter and "billing has not landed yet" both produce an empty
+    # table. Without this the operator has no way to tell them apart.
+    records = [_record(meter="5.4 inp Gl 1M Tokens", cost=9.0, account="real-account")]
+
+    with caplog.at_level(logging.ERROR, logger="billing_sync.usage"):
+        rows = aggregate(records, since=_SINCE, subscription_id="sub", account_name="typo-account")
+
+    assert rows == []
+    assert "typo-account" in caplog.text
+    assert "real-account" in caplog.text
+
+
+def test_stays_quiet_when_there_is_simply_no_billing_yet(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.ERROR, logger="billing_sync.usage"):
+        rows = aggregate([], since=_SINCE, subscription_id="sub", account_name="any-account")
+
+    assert rows == []
+    assert caplog.text == ""
 
 
 def test_config_rejects_a_missing_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:

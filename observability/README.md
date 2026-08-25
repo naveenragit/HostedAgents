@@ -58,13 +58,24 @@ Cost Management ──► billing-sync job ──► DCE ──► DCR ──►
 
 ## 2. What you need before starting
 
+### For Step 1 — the report only
+
 | Requirement | Why | How to check |
 | --- | --- | --- |
 | Foundry project with hosted agents | emits the spans | — |
 | **Application Insights connected to the project, tracing enabled** | without this there is no data at all | Foundry portal → Agents → Traces |
-| Log Analytics workspace behind that App Insights | hosts the functions and custom table | see command below |
-| Azure Container Registry | hosts the billing job image | `az acr list -o table` |
+| Log Analytics workspace behind that App Insights | hosts the functions | see command below |
 | Azure CLI, logged in | everything below | `az account show` |
+
+### Additionally for Step 2 — the billing import
+
+| Requirement | Why | How to check |
+| --- | --- | --- |
+| Azure Container Registry | hosts the billing job image | `az acr list -o table` |
+| A region that supports Container Apps | hosts the scheduled job | defaults to the workspace's region |
+
+If you only want token and per-user consumption without cost figures, Step 1 is
+sufficient on its own and needs no registry.
 
 Tracing is **off by default** in Foundry. If it was never enabled, no amount of
 deployment here will produce data.
@@ -98,7 +109,8 @@ connection string or password.
 ### Step 1 — Deploy the report
 
 Creates the three saved functions and the workbook. Free, additive, and safe to
-re-run; the existing API Management workbook is untouched.
+re-run. Only the selected workbook's own functions are deployed, so this cannot
+overwrite the API Management report's queries.
 
 ```powershell
 .\scripts\deploy-workbook.ps1 `
@@ -113,8 +125,9 @@ Open **Application Insights → Workbooks → Foundry hosted agents — per-user
 At this point token and per-user panels work, but every cost figure is zero:
 there is no billing data yet.
 
-> Pass `-Workbook all` to deploy both workbooks, or omit `-Workbook` (defaults to
-> `all`). `-FunctionsOnly` updates the KQL without touching either workbook.
+> Pass `-Workbook all` to deploy both workbooks and both sets of functions, or
+> omit `-Workbook` (defaults to `all`). `-FunctionsOnly` updates the selected
+> workbook's KQL without touching any workbook.
 
 ### Step 2 — Deploy the billing import
 
@@ -131,7 +144,14 @@ This is the part that creates **billable Azure resources**. Run it deliberately.
 ```
 
 `-AccountName` is optional and restricts billing rows to one Foundry account.
-Omit it to ingest every model meter in the subscription.
+Omit it to ingest every model meter in the subscription. If the name is
+misspelled the job logs an error naming the accounts it *did* see, rather than
+quietly ingesting nothing.
+
+`-Name` becomes the suffix of every resource it creates, so it must satisfy
+`^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$` — **lowercase only, 3–32 characters**. The
+`billing-sync-` prefix used above consumes 13, leaving at most 19 for your
+suffix. An uppercase letter fails with a bare regex error.
 
 It creates, in order:
 
@@ -153,12 +173,22 @@ the report has data immediately:
 az containerapp job start -n job-<name> -g <rg>
 ```
 
-Wait about a minute, then confirm it succeeded:
+The first execution pulls the image cold. Allow **up to five minutes** before
+judging it. Then check the outcome:
 
 ```powershell
 az containerapp job execution list -n job-<name> -g <rg> `
   --query "[0].{name:name, status:properties.status}" -o table
 ```
+
+| Status | Meaning |
+| --- | --- |
+| `Running` | still going — wait |
+| `Succeeded` | done; billing rows are on their way to the table |
+| `Failed` | read the console log before re-running (see §4) |
+
+A `Failed` first execution is worth reading rather than retrying blindly; the
+cause is almost always configuration, and it will fail again identically.
 
 ### Step 4 — Verify
 
@@ -171,7 +201,11 @@ FoundryBilledCost_CL | summarize Rows = count(), Cost = sum(BilledCostUsd), Late
 ```
 
 ```kusto
-// Telemetry is attributed. Attributed should equal Requests.
+// Telemetry is attributed. Requests should be non-zero for each of your own
+// agents. Attributed will be LOWER than Requests where an agent writes no log
+// record inside the request scope - portal playground sessions and some
+// built-in agents behave that way. Only your own agents reaching zero
+// attribution indicates a problem.
 FoundryAgentUsage
 | summarize Requests = count(), Attributed = countif(UserId != 'unattributed') by AgentName
 ```
@@ -275,15 +309,28 @@ Two files need an entry, or that model's spend is misreported:
    `deploy-billing-sync.ps1` to rebuild the image.
 
 2. **The rate card inside [`FoundryAgentUsage.kql`](functions/FoundryAgentUsage.kql)** —
-   regenerate rows with:
+   an effective-dated `rates` datatable near the top of the file. Regenerate rows
+   from what Azure actually billed:
 
    ```powershell
    .\scripts\sync-model-prices.ps1 -AccountName <foundry-account>
    ```
 
+   The script prints KQL rows but writes nothing. Paste them by hand into the
+   `rates` datatable, then redeploy with:
+
+   ```powershell
+   .\scripts\deploy-workbook.ps1 -ResourceGroup <rg> -WorkspaceName <ws> `
+       -AppInsightsName <ai> -Workbook foundry -FunctionsOnly
+   ```
+
    **Append rows, never edit existing ones.** Rates are effective-dated; editing a
    row silently re-prices history, which is the failure this design exists to
-   prevent. Then redeploy with `deploy-workbook.ps1 -FunctionsOnly`.
+   prevent.
+
+   The API Management report's `HostedAgentModelUsage` has a `rates` datatable of
+   the same shape. The script's output is valid for both, and it names both, so
+   update whichever reports you actually use.
 
 ### Reading the reconciliation status
 
@@ -312,6 +359,7 @@ while `AllocatedUsd` shows raw behaviour.
 | An agent shows zero cost | It emits no `gen_ai` spans. Agent Framework agents emit them automatically; agents on the raw responses adapter must record their own |
 | Cost is zero but tokens are present | Billing not ingested yet, or the model has no rate — check `RateSource` and the `unpriced` count |
 | `FoundryBilledCost_CL` empty after a successful run | First ingestion into a new custom table takes several minutes |
+| Job succeeds but ingests nothing, every run | `-AccountName` does not match any billed resource. The job logs an error naming the accounts it did see — check the console log |
 | Large `untraced` cost | Model usage from a workload that emits no `gen_ai` spans. Enabling the `AzureOpenAIRequestUsage` diagnostic category on the Foundry account logs token usage for **every** caller, though it identifies the calling identity rather than the end user |
 | Job fails, no logs | The Container Apps environment was created without a logs destination |
 
