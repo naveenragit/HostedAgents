@@ -334,14 +334,19 @@ Two files need an entry, or that model's spend is misreported:
 
 ### Reading the reconciliation status
 
+Evaluated in this order; the first match wins, so a row is only `divergent` once
+every other explanation has been ruled out. The workbook carries the same table at
+the end of the report.
+
 | Status | Meaning | Action |
 | --- | --- | --- |
-| `reconciled` | allocated and billed agree within 1% | trust the figures |
-| `pending billing` | traced in the last two days, not yet billed | normal, wait |
-| `unbilled` | traced, inside the window, but no meter billed | check the meter map |
+| `unpriced` | no rate applied to any request, counted as zero | re-run `sync-model-prices.ps1` |
 | `outside billed window` | older than the ingested billing data | widen `BILLING_LOOKBACK_DAYS` |
+| `pending billing` | traced in the last two days, not yet billed | normal, wait |
+| `unbilled` | traced, inside the window, past the billing lag, still no meter | check the meter map |
 | `untraced` | **Azure billed, but no trace exists** | that spend cannot be attributed to anyone |
-| `unpriced` | no rate applied, counted as zero | re-run `sync-model-prices.ps1` |
+| `partly unpriced` | some requests priced, some not — the total is a floor | refresh the rate table |
+| `reconciled` | allocated and billed agree within 1% | trust the figures |
 | `divergent` | disagree beyond tolerance | the rate table or meter map is wrong |
 
 `Factor` is the multiplier that makes allocation tie out to the invoice. The
