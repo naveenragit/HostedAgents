@@ -12,7 +12,7 @@ azure-ai-projects>=2.4.0,<3.0.0
 azure-identity>=1.25.3,<2.0.0
 # Imported directly to build the API Management gateway client, so it is declared
 # here rather than relied on as an azure-ai-projects transitive dependency.
-openai>=1.109.1,<3.0.0
+openai>=3.3.1,<4.0.0
 # Imported directly to record gen_ai token-usage spans. The hosted runtime
 # configures the provider and exporter; only the API surface is used here.
 opentelemetry-api>=1.30.0,<2.0.0
