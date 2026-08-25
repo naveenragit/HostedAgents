@@ -678,11 +678,17 @@ echoed back by the management API. Do not put it in an image or in `azure.yaml`.
 
 ## Cost and consumption reporting
 
-An Azure Monitor **workbook** reports what the agents consumed, who consumed it, and what it cost.
-It lives in the Application Insights resource the gateway and the Foundry project both report to:
-**Application Insights → Workbooks → *Hosted agent model consumption and cost***.
+Two Azure Monitor **workbooks** report what the agents consumed, who consumed it, and what it cost.
+Both live in the Application Insights resource the gateway and the Foundry project report to:
 
-It answers, per user, per agent and per model:
+| Workbook | Source | Covers |
+|---|---|---|
+| ***Token Consumption from Foundry Tracing and Billing*** | Foundry tracing + Azure billing | Every agent in the project, gateway or not |
+| ***Token Consumption from APIM logs and Billing*** | API Management AI gateway + Azure billing | Only traffic routed through the gateway |
+
+Setup, operation and troubleshooting for both are in [observability/README.md](observability/README.md).
+
+Between them they answer, per user, per agent and per model:
 
 | Group | Panels |
 |---|---|

@@ -87,14 +87,14 @@ $catalog = @(
         Key         = 'apim'
         Template    = Join-Path $observability 'hosted-agents-workbook.json'
         Id          = 'a7f3c1d2-9b64-4e8a-8c17-6f2d5b0e91aa'
-        DisplayName = 'Hosted agent model consumption and cost'
+        DisplayName = 'Token Consumption from APIM logs and Billing'
         Functions   = @('HostedAgentModelUsage', 'HostedAgentTokenCategories')
     }
     [pscustomobject]@{
         Key         = 'foundry'
         Template    = Join-Path $observability 'foundry-cost-workbook.json'
         Id          = 'b4e91d67-2a38-4c05-9f1e-7d3a86b2c410'
-        DisplayName = 'Foundry hosted agents - per-user cost'
+        DisplayName = 'Token Consumption from Foundry Tracing and Billing'
         Functions   = @('FoundryAgentUsage', 'FoundryBilledCost', 'FoundryAgentCost')
     }
 )

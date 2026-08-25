@@ -6,7 +6,7 @@
       "type": 1,
       "name": "header",
       "content": {
-        "json": "# Foundry hosted agents - per-user cost\n\nPer-user token consumption and chargeback built from **Foundry tracing in Application Insights** and **Azure billing**. It reads no API Management data, so it covers every agent in the project whether or not its traffic is routed through a gateway.\n\nRead the **Reconciliation** section before quoting any figure. Cost here is derived from telemetry and is only trustworthy where it ties out against the invoice."
+        "json": "# Token Consumption from Foundry Tracing and Billing\n\nPer-user token consumption and chargeback built from **Foundry tracing in Application Insights** and **Azure billing**. It reads no API Management data, so it covers every agent in the project whether or not its traffic is routed through a gateway.\n\nRead the **Reconciliation** section before quoting any figure. Cost here is derived from telemetry and is only trustworthy where it ties out against the invoice."
       }
     },
     {

@@ -6,8 +6,8 @@ run side by side.
 
 | Workbook | Template | Source | Covers |
 | --- | --- | --- | --- |
-| **Foundry hosted agents — per-user cost** | `foundry-cost-workbook.json` | Foundry tracing + Azure billing | Every agent in the project |
-| Hosted agent model consumption and cost | `hosted-agents-workbook.json` | API Management AI gateway | Only traffic routed through the gateway |
+| **Token Consumption from Foundry Tracing and Billing** | `foundry-cost-workbook.json` | Foundry tracing + Azure billing | Every agent in the project |
+| Token Consumption from APIM logs and Billing | `hosted-agents-workbook.json` | API Management AI gateway | Only traffic routed through the gateway |
 
 **This guide covers the Foundry one.** It reads no API Management data, so it works
 whether or not a gateway is provisioned.
@@ -120,7 +120,7 @@ overwrite the API Management report's queries.
     -Workbook            foundry
 ```
 
-Open **Application Insights → Workbooks → Foundry hosted agents — per-user cost**.
+Open **Application Insights → Workbooks → Token Consumption from Foundry Tracing and Billing**.
 
 At this point token and per-user panels work, but every cost figure is zero:
 there is no billing data yet.

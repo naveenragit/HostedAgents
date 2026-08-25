@@ -6,7 +6,7 @@
       "type": 1,
       "name": "header",
       "content": {
-        "json": "# Hosted agent model consumption and cost\n\nPer-user token consumption, chargeback and efficiency for model traffic routed through the API Management AI gateway."
+        "json": "# Token Consumption from APIM logs and Billing\n\nPer-user token consumption, chargeback and efficiency for model traffic routed through the API Management AI gateway."
       }
     },
     {
