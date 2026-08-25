@@ -5,7 +5,7 @@
 # pytest is held at a version with no known advisories; `scripts/check.ps1`
 # runs `pip-audit --strict` over this file, so a vulnerable pin fails the gate.
 
-ruff==0.14.2
+ruff==0.16.4
 mypy==1.18.2
 pytest==9.0.3
 pytest-asyncio==1.4.0
