@@ -1,1 +1,65 @@
-let lookback = 30d; let rates = datatable(ModelName:string, ValidFrom:datetime, InputUsdPerMTok:real, CachedInputUsdPerMTok:real, OutputUsdPerMTok:real, RateSource:string) ['gpt-5.4', datetime(2026-08-04), 2.5, 0.25, 15.0, 'billed', 'gpt-5', datetime(2026-08-04), 1.25, 0.125, 10.0, 'billed', 'gpt-4.1', datetime(2026-08-04), 2.0, 0.2, 8.0, 'billed', 'gpt-4o', datetime(2026-08-12), 2.5, 2.5, 10.0, 'billed', 'text-embedding-3-large', datetime(2026-08-05), 0.13, 0.13, 0.0, 'billed', 'gpt-5.1', datetime(2026-08-12), 1.25, 0.125, 20.0, 'mixed', 'gpt-5-mini', datetime(2026-08-12), 0.45, 0.045, 2.0, 'mixed', 'gpt-5.2', datetime(2020-01-01), 3.5, 0.35, 28.0, 'retail', 'gpt-5.6-sol', datetime(2020-01-01), 5.0, 0.5, 30.0, 'retail', 'gpt-5.6-luna', datetime(2020-01-01), 1.0, 0.1, 6.0, 'retail', 'gpt-5-codex', datetime(2020-01-01), 1.25, 0.125, 10.0, 'retail', 'gpt-chat-latest', datetime(2020-01-01), 5.0, 0.5, 30.0, 'retail', 'grok-4', datetime(2020-01-01), 3.0, 3.0, 15.0, 'retail', 'text-embedding-3-small', datetime(2020-01-01), 0.02, 0.02, 0.0, 'retail']; let gw = materialize(ApiManagementGatewayLogs | where TimeGenerated > ago(lookback) | where ApiId == 'hosted-agents-models' | extend h = parse_json(RequestHeaders) | project CorrelationId, UserKey = tostring(h['x-user-key']), AgentName = tostring(h['x-agent-name']), OperationId, ResponseCode, IsRequestSuccess, TotalTime, BackendTime); ApiManagementGatewayLlmLog | where TimeGenerated > ago(lookback) | join kind=leftouter gw on CorrelationId | extend UserKey = iff(isempty(UserKey), 'unattributed', UserKey), AgentName = iff(isempty(AgentName), 'unknown', AgentName) | join kind=leftouter (rates) on ModelName | where isnull(ValidFrom) or ValidFrom <= TimeGenerated | summarize arg_max(ValidFrom, *) by CorrelationId | extend PriceKnown = isnotnull(InputUsdPerMTok), RateSource = coalesce(RateSource, 'unpriced') | extend EstimatedCostUsd = (toreal(PromptTokens) * coalesce(InputUsdPerMTok, 0.0) + toreal(CompletionTokens) * coalesce(OutputUsdPerMTok, 0.0)) / 1000000.0 | project TimeGenerated, UserKey, AgentName, ModelName, DeploymentName, Region, PromptTokens, CompletionTokens, TotalTokens, EstimatedCostUsd, PriceKnown, RateSource, RateValidFrom = ValidFrom, IsStreamCompletion, CorrelationId, RequestId, OperationId, ResponseCode, IsRequestSuccess, TotalTime, BackendTime
+// Per-request model usage and cost from the API Management AI gateway.
+//
+// Two gateway tables are joined on CorrelationId: ApiManagementGatewayLlmLog
+// carries the model and token counts but no caller identity, and
+// ApiManagementGatewayLogs carries the request headers the user key arrives in.
+//
+// The gateway subquery is bounded and materialized here on purpose. A saved
+// function whose join is filtered from the outside pushes that predicate into
+// both branches and silently empties the right-hand side, turning every row
+// into 'unattributed'.
+let lookback = 30d;
+// Effective-dated rates in USD per 1M tokens, shared with every other pricing
+// function via the `ModelRates` saved function. Regenerate with
+// scripts\sync-model-prices.ps1 and APPEND rows there.
+let rates = materialize(ModelRates);
+let gw = materialize(
+    ApiManagementGatewayLogs
+    | where TimeGenerated > ago(lookback)
+    | where ApiId == 'hosted-agents-models'
+    | extend h = parse_json(RequestHeaders)
+    | project
+        CorrelationId,
+        UserKey   = tostring(h['x-user-key']),
+        AgentName = tostring(h['x-agent-name']),
+        OperationId,
+        ResponseCode,
+        IsRequestSuccess,
+        TotalTime,
+        BackendTime
+);
+ApiManagementGatewayLlmLog
+| where TimeGenerated > ago(lookback)
+| join kind=leftouter gw on CorrelationId
+| extend
+    UserKey   = iff(isempty(UserKey), 'unattributed', UserKey),
+    AgentName = iff(isempty(AgentName), 'unknown', AgentName)
+| join kind=leftouter rates on ModelName
+// A rate that is not yet in effect must neither price the row nor drop it, so
+// non-applicable candidates are blanked and ranked below the null-rate sentinel
+// instead of being filtered out. Filtering here instead deleted every request
+// made before its model's first known rate, understating traffic and cost while
+// still reporting a clean 0% unpriced.
+| extend RateApplies = isnotnull(ValidFrom) and ValidFrom <= TimeGenerated
+| extend
+    RateRank              = iff(RateApplies, ValidFrom, datetime(1800-01-01)),
+    ValidFrom             = iff(RateApplies, ValidFrom, datetime(null)),
+    InputUsdPerMTok       = iff(RateApplies, InputUsdPerMTok, real(null)),
+    CachedInputUsdPerMTok = iff(RateApplies, CachedInputUsdPerMTok, real(null)),
+    OutputUsdPerMTok      = iff(RateApplies, OutputUsdPerMTok, real(null)),
+    RateSource            = iff(RateApplies, RateSource, '')
+| summarize arg_max(RateRank, *) by CorrelationId
+| extend PriceKnown = isnotnull(InputUsdPerMTok)
+| extend RateSource = iff(PriceKnown, RateSource, 'unpriced')
+// LlmLog carries no cached-token column, so the input side cannot be discounted
+// here. HostedAgentTokenCategories prices cache-adjusted cost from the emitted
+// gateway metrics, which do carry it.
+| extend EstimatedCostUsd =
+    (toreal(PromptTokens)     * coalesce(InputUsdPerMTok, 0.0)
+   + toreal(CompletionTokens) * coalesce(OutputUsdPerMTok, 0.0)) / 1000000.0
+| project
+    TimeGenerated, UserKey, AgentName, ModelName, DeploymentName, Region,
+    PromptTokens, CompletionTokens, TotalTokens,
+    EstimatedCostUsd, PriceKnown, RateSource, RateValidFrom = ValidFrom,
+    IsStreamCompletion, CorrelationId, RequestId, OperationId,
+    ResponseCode, IsRequestSuccess, TotalTime, BackendTime

@@ -14,10 +14,11 @@
     reporting function can price each request at the rate that applied on the day
     it ran.
 
-    Output is a KQL datatable fragment for the `HostedAgentModelUsage` saved
-    function in Log Analytics. It intentionally does not write to Azure: review
-    the mapping before applying it, because meter names do not match model
-    deployment names and new models need a mapping entry.
+    Output is a KQL datatable fragment for the `ModelRates` saved function in
+    Log Analytics, which is the single rate card every pricing function reads. It
+    intentionally does not write to Azure: review the mapping before applying it,
+    because meter names do not match model deployment names and new models need a
+    mapping entry.
 
     Requires an authenticated Azure CLI session with billing read access.
 
@@ -28,13 +29,19 @@
     Optional Foundry/Cognitive Services account name to restrict results to.
 
 .PARAMETER Days
-    How many days of usage to keep from the returned page. Defaults to 7.
+    How many days of usage to keep. Defaults to 7.
+
+.PARAMETER MaxPages
+    Safety stop for `nextLink` paging. A subscription with a long history can
+    page for a very long time; raise this if the script reports it stopped early.
 
 .NOTES
     The Consumption API ignores a `properties/usageStart` filter on this
-    subscription and returns the same unfiltered page regardless, so the window
-    is applied client-side. Paging via `nextLink` and the Cost Management query
-    API were both unusable: the former gateway-times-out, the latter returns 429.
+    subscription and returns the same unfiltered result regardless, so the window
+    is applied client-side. Paging is not optional: one 1000-record page does not
+    cover a busy day, and reading only the first page silently truncates older
+    days, which pushes every emitted `ValidFrom` forward to a date the rate did
+    not actually start on.
 
 .EXAMPLE
     .\scripts\sync-model-prices.ps1 -AccountName <foundry-account>
@@ -49,7 +56,9 @@ param(
     [string]$SubscriptionId,
     [string]$AccountName,
     [ValidateRange(1, 31)]
-    [int]$Days = 7
+    [int]$Days = 7,
+    [ValidateRange(1, 500)]
+    [int]$MaxPages = 50
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,10 +76,14 @@ if (-not (Test-Path $mapPath)) {
 $allMeters = @((Get-Content -Raw -Path $mapPath | ConvertFrom-Json).meters)
 $meterMap = @($allMeters | Where-Object { $_.tier -eq 'standard' })
 
+# Meter patterns are case-sensitive, as documented in the map and as applied by
+# billing_sync.meters, the resolver that actually ingests billed cost. PowerShell's
+# -match is case-insensitive, so using it here made this script claim mappings the
+# ingestion path rejects, and the two reports disagreed about the same meter.
 function Resolve-Meter {
     param([string]$MeterName)
     foreach ($entry in $meterMap) {
-        if ($MeterName -match $entry.pattern) {
+        if ($MeterName -cmatch $entry.pattern) {
             return [pscustomobject]@{ Model = $entry.model; Direction = $entry.direction }
         }
     }
@@ -80,7 +93,7 @@ function Resolve-Meter {
 function Test-KnownMeter {
     param([string]$MeterName)
     foreach ($entry in $allMeters) {
-        if ($MeterName -match $entry.pattern) { return $true }
+        if ($MeterName -cmatch $entry.pattern) { return $true }
     }
     return $false
 }
@@ -106,22 +119,44 @@ if (-not $SubscriptionId) {
 $since = (Get-Date).ToUniversalTime().AddDays(-$Days).Date
 Write-Host "==> Reading billed model meters since $($since.ToString('yyyy-MM-dd'))" -ForegroundColor Cyan
 
-# One bounded request. Server-side date filtering is not honoured here and
-# nextLink paging gateway-times-out, so take a single page and filter locally.
-$raw = az rest --method get `
-    --url "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Consumption/usageDetails" `
-    --url-parameters api-version=2024-08-01 metric=ActualCost '$top=1000' `
-    -o json 2>$null
-
-if ($LASTEXITCODE -ne 0 -or -not $raw) {
-    throw 'Failed to read usage details. Confirm the signed-in identity has billing read access.'
+# Follow nextLink. A single 1000-record page does not cover a busy subscription,
+# and the records it drops are the older ones -- exactly the ones that establish
+# when a rate first took effect.
+$url = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Consumption/usageDetails?api-version=2024-08-01&metric=ActualCost&`$top=1000"
+$all = [System.Collections.Generic.List[object]]::new()
+$page = 0
+$truncated = $false
+while ($url) {
+    if ($page -ge $MaxPages) {
+        $truncated = $true
+        break
+    }
+    $page++
+    $raw = az rest --method get --url $url -o json 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $raw) {
+        if ($page -eq 1) {
+            throw 'Failed to read usage details. Confirm the signed-in identity has billing read access.'
+        }
+        # A later page failing is survivable, but the window is now partial and
+        # any ValidFrom derived from it may be later than the real start date.
+        Write-Warning "Usage detail paging failed at page $page. Results are incomplete."
+        $truncated = $true
+        break
+    }
+    $body = $raw | ConvertFrom-Json
+    foreach ($record in $body.value) { $all.Add($record) }
+    $url = if ($body.PSObject.Properties.Name -contains 'nextLink') { $body.nextLink } else { $null }
+}
+Write-Host "    Read $($all.Count) usage record(s) across $page page(s)" -ForegroundColor DarkGray
+if ($truncated) {
+    Write-Warning "Stopped before the end of the data. Re-run with a larger -MaxPages before trusting the ValidFrom dates."
 }
 
-$records = @(($raw | ConvertFrom-Json).value | Where-Object { [datetime]$_.properties.date -ge $since })
+$records = @($all | Where-Object { [datetime]$_.properties.date -ge $since })
 if ($records.Count -eq 0) {
     throw "No usage records in the last $Days day(s). Model meters lag usage, so try a wider -Days value."
 }
-Write-Host "    Retrieved $($records.Count) usage record(s) in window" -ForegroundColor DarkGray
+Write-Host "    $($records.Count) record(s) inside the $Days-day window" -ForegroundColor DarkGray
 
 $models = $records | Where-Object { $_.properties.meterCategory -eq 'Foundry Models' }
 if ($AccountName) {
@@ -149,6 +184,17 @@ $observed = foreach ($record in $models) {
 $unresolved = @($observed | Where-Object { -not $_.Model } | Select-Object -ExpandProperty Meter -Unique)
 $nonStandard = @($unresolved | Where-Object { Test-KnownMeter -MeterName $_ })
 $unmapped = @($unresolved | Where-Object { -not (Test-KnownMeter -MeterName $_) })
+
+# A unit this script cannot convert to a per-million basis has no usable price.
+# Keeping it would compare NaN against NaN when detecting rate changes, which is
+# never equal, and emit a spurious new row for every single day.
+$unconvertible = @($observed | Where-Object { $_.Model -and [double]::IsNaN($_.PerMTok) } | Select-Object -ExpandProperty Meter -Unique)
+if ($unconvertible.Count -gt 0) {
+    Write-Warning 'Meters billed in a unit this script cannot convert to per-1M tokens (excluded):'
+    $unconvertible | ForEach-Object { Write-Warning "  $_" }
+    $observed = @($observed | Where-Object { -not ($_.Model -and [double]::IsNaN($_.PerMTok)) })
+}
+
 if ($nonStandard.Count -gt 0) {
     # Already in the map under a non-standard tier. Adding a second entry would
     # produce two conflicting rates for one deployment.
@@ -177,11 +223,9 @@ $observed |
     Sort-Object Model, Direction |
     Format-Table -AutoSize
 
-Write-Host "`n==> KQL rows for the rates datatable" -ForegroundColor Cyan
-Write-Host "    Paste into the 'rates' datatable in BOTH saved functions that price" -ForegroundColor DarkGray
-Write-Host "    requests, which share this row shape:" -ForegroundColor DarkGray
-Write-Host "      observability\functions\FoundryAgentUsage.kql    (Foundry tracing report)" -ForegroundColor DarkGray
-Write-Host "      observability\functions\HostedAgentModelUsage.kql (API Management report)" -ForegroundColor DarkGray
+Write-Host "`n==> KQL rows for the ModelRates datatable" -ForegroundColor Cyan
+Write-Host "    Paste into observability\functions\ModelRates.kql, the single rate" -ForegroundColor DarkGray
+Write-Host "    card every pricing function reads." -ForegroundColor DarkGray
 Write-Host "    Append new rows rather than editing existing ones. Editing a rate" -ForegroundColor DarkGray
 Write-Host "    rewrites history; appending an effective-dated row does not." -ForegroundColor DarkGray
 
@@ -191,35 +235,77 @@ if (-not $byModel) {
     return
 }
 foreach ($group in $byModel) {
-    $validFrom = ($group.Group | Sort-Object Date | Select-Object -First 1).Date
-    $inputRow = $group.Group | Where-Object { $_.Direction -eq 'input' } | Select-Object -First 1
-    $outputRow = $group.Group | Where-Object { $_.Direction -eq 'output' } | Select-Object -First 1
-    $cachedRow = $group.Group | Where-Object { $_.Direction -eq 'cachedInput' } | Select-Object -First 1
+    $model = $group.Name
+    # The 1/10th cached discount holds across the GPT-5 family on the public
+    # price list. It is not a general rule, so it is never applied to anything
+    # else: inventing a cached rate for a model that does not discount caching
+    # understates cost on every cached token it serves.
+    $assumesCacheDiscount = $model -cmatch '^gpt-5'
 
-    if (-not $inputRow) {
-        Write-Warning "Skipping $($group.Name): no input meter observed."
-        continue
+    $dates = @($group.Group | Select-Object -ExpandProperty Date -Unique | Sort-Object)
+    $lastInput = $null
+    $lastCached = $null
+    $lastOutput = $null
+    $emittedAny = $false
+
+    # Walk the window in order and emit a row only where a rate actually moved.
+    # Collapsing the whole window into one first-seen row dated at the earliest
+    # observation reports a rate as having been in effect on days it was not,
+    # which is the exact history rewrite effective dating exists to prevent.
+    foreach ($date in $dates) {
+        $day = @($group.Group | Where-Object { $_.Date -eq $date })
+        $inputRow = @($day | Where-Object { $_.Direction -eq 'input' }) | Select-Object -First 1
+        $cachedRow = @($day | Where-Object { $_.Direction -eq 'cachedInput' }) | Select-Object -First 1
+        $outputRow = @($day | Where-Object { $_.Direction -eq 'output' }) | Select-Object -First 1
+
+        # A direction with no meter on this day did not change price, it simply
+        # was not used, so the last known value carries forward.
+        $inputPrice = if ($inputRow) { $inputRow.PerMTok } else { $lastInput }
+        $cachedPrice = if ($cachedRow) { $cachedRow.PerMTok } else { $lastCached }
+        $outputPrice = if ($outputRow) { $outputRow.PerMTok } else { $lastOutput }
+
+        if ($null -eq $inputPrice) { continue }
+
+        $changed = ($inputPrice -ne $lastInput) -or ($cachedPrice -ne $lastCached) -or ($outputPrice -ne $lastOutput)
+        $lastInput = $inputPrice
+        $lastCached = $cachedPrice
+        $lastOutput = $outputPrice
+        if (-not $changed) { continue }
+
+        $inferred = @()
+
+        if ($null -ne $cachedPrice) {
+            $cached = '{0}' -f $cachedPrice
+        }
+        elseif ($assumesCacheDiscount) {
+            $cached = '{0}' -f [math]::Round($inputPrice * 0.1, 6)
+            $inferred += 'cached rate inferred at 1/10th of input'
+        }
+        else {
+            $cached = '<KEEP-EXISTING-CACHED-RATE>'
+            $inferred += 'no cached meter billed and no documented discount for this family'
+        }
+
+        # A direction with no billed meter must not be emitted as zero, which
+        # would silently understate cost.
+        if ($null -ne $outputPrice) {
+            $output = '{0}' -f $outputPrice
+        }
+        else {
+            $output = '<KEEP-EXISTING-OUTPUT-RATE>'
+            $inferred += 'no output meter billed'
+        }
+
+        $source = if ($inferred.Count -eq 0) { 'billed' } else { 'mixed' }
+        foreach ($note in $inferred) {
+            Write-Warning "${model} @ ${date}: $note. Keep the current value and leave the row as 'mixed'."
+        }
+
+        "'{0}', datetime({1}), {2}, {3}, {4}, '{5}'," -f $model, $date, $inputPrice, $cached, $output, $source
+        $emittedAny = $true
     }
 
-    $input_ = $inputRow.PerMTok
-    # Cached input is discounted to a tenth of the input rate across every
-    # GPT-5-family meter on the public price list, so when no cached meter has
-    # been billed yet that ratio is applied to the billed input rate. It is an
-    # inference, not an observation: replace it as soon as a cached meter bills.
-    $cached = if ($cachedRow) { $cachedRow.PerMTok } else { [math]::Round($input_ * 0.1, 6) }
-
-    # A direction with no billed meter must not be emitted as zero, which would
-    # silently understate cost. Emit a placeholder and mark the row 'mixed' so
-    # the workbook reports it as only partly authoritative.
-    if ($outputRow) {
-        $output = '{0}' -f $outputRow.PerMTok
-        $source = 'billed'
+    if (-not $emittedAny) {
+        Write-Warning "Skipping ${model}: no input meter observed, so there is nothing to anchor a rate on."
     }
-    else {
-        $output = '<KEEP-EXISTING-OUTPUT-RATE>'
-        $source = 'mixed'
-        Write-Warning "$($group.Name): no output meter billed yet. Keep the current output rate and leave the row as 'mixed'."
-    }
-
-    "'{0}', datetime({1}), {2}, {3}, {4}, '{5}'," -f $group.Name, $validFrom, $input_, $cached, $output, $source
 }

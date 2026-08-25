@@ -16,29 +16,10 @@
 // TimeGenerated > ago(1d)`) pushes that predicate into both branches and
 // silently empties the right-hand side, turning every row into 'unattributed'.
 let lookback = 30d;
-// Effective-dated rates in USD per 1M tokens. Regenerate with
-// scripts\sync-model-prices.ps1 and APPEND rows; editing a row re-prices
-// history, which defeats the point of dating them.
-let rates = datatable(
-    ModelName: string, ValidFrom: datetime,
-    InputUsdPerMTok: real, CachedInputUsdPerMTok: real, OutputUsdPerMTok: real,
-    RateSource: string)
-[
-    'gpt-5.4',                datetime(2026-08-04), 2.5,  0.25,  15.0, 'billed',
-    'gpt-5',                  datetime(2026-08-04), 1.25, 0.125, 10.0, 'billed',
-    'gpt-4.1',                datetime(2026-08-04), 2.0,  0.2,    8.0, 'billed',
-    'gpt-4o',                 datetime(2026-08-12), 2.5,  2.5,   10.0, 'billed',
-    'text-embedding-3-large', datetime(2026-08-05), 0.13, 0.13,   0.0, 'billed',
-    'gpt-5.1',                datetime(2026-08-12), 1.25, 0.125, 20.0, 'mixed',
-    'gpt-5-mini',             datetime(2026-08-12), 0.45, 0.045,  2.0, 'mixed',
-    'gpt-5.2',                datetime(2020-01-01), 3.5,  0.35,  28.0, 'retail',
-    'gpt-5.6-sol',            datetime(2020-01-01), 5.0,  0.5,   30.0, 'retail',
-    'gpt-5.6-luna',           datetime(2020-01-01), 1.0,  0.1,    6.0, 'retail',
-    'gpt-5-codex',            datetime(2020-01-01), 1.25, 0.125, 10.0, 'retail',
-    'gpt-chat-latest',        datetime(2020-01-01), 5.0,  0.5,   30.0, 'retail',
-    'grok-4',                 datetime(2020-01-01), 3.0,  3.0,   15.0, 'retail',
-    'text-embedding-3-small', datetime(2020-01-01), 0.02, 0.02,   0.0, 'retail'
-];
+// Effective-dated rates in USD per 1M tokens, shared with every other pricing
+// function via the `ModelRates` saved function. Regenerate with
+// scripts\sync-model-prices.ps1 and APPEND rows there.
+let rates = materialize(ModelRates);
 let users = materialize(
     AppTraces
     | where TimeGenerated > ago(lookback)

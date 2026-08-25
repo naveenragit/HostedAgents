@@ -1,0 +1,42 @@
+// The one rate card. Every report that prices a token reads it from here.
+//
+// This used to be an inline `rates` datatable copied into each pricing function.
+// Three copies drifted: the token-category copy lost its effective dates
+// entirely, and the sync script's instructions named only two of the three, so
+// a rate refresh left the cache-adjusted cost panels pricing on stale numbers
+// with no error anywhere. A saved function is the only shape Log Analytics
+// offers that lets the copies be collapsed into one.
+//
+// Rates are USD per 1M tokens and are EFFECTIVE-DATED. Callers must join as of
+// the request timestamp, not merely look the model up, or every refresh
+// silently re-prices history.
+//
+// Regenerate with `scripts\sync-model-prices.ps1` and APPEND rows. Editing an
+// existing row rewrites the past, which is the failure this design exists to
+// prevent. `ValidFrom` of 2020-01-01 marks a retail-list rate that has been in
+// place for as long as this report has existed; a real date marks the first day
+// the subscription was observed to be billed that rate.
+//
+// RateSource: 'billed'  every direction came from an invoiced meter
+//             'mixed'   at least one direction is still a retail-list estimate
+//             'retail'  no meter for this model has been billed yet
+datatable(
+    ModelName: string, ValidFrom: datetime,
+    InputUsdPerMTok: real, CachedInputUsdPerMTok: real, OutputUsdPerMTok: real,
+    RateSource: string)
+[
+    'gpt-5.4',                datetime(2026-08-04), 2.5,  0.25,  15.0, 'billed',
+    'gpt-5',                  datetime(2026-08-04), 1.25, 0.125, 10.0, 'billed',
+    'gpt-4.1',                datetime(2026-08-04), 2.0,  0.2,    8.0, 'billed',
+    'gpt-4o',                 datetime(2026-08-12), 2.5,  2.5,   10.0, 'billed',
+    'text-embedding-3-large', datetime(2026-08-05), 0.13, 0.13,   0.0, 'billed',
+    'gpt-5.1',                datetime(2026-08-12), 1.25, 0.125, 20.0, 'mixed',
+    'gpt-5-mini',             datetime(2026-08-12), 0.45, 0.045,  2.0, 'mixed',
+    'gpt-5.2',                datetime(2020-01-01), 3.5,  0.35,  28.0, 'retail',
+    'gpt-5.6-sol',            datetime(2020-01-01), 5.0,  0.5,   30.0, 'retail',
+    'gpt-5.6-luna',           datetime(2020-01-01), 1.0,  0.1,    6.0, 'retail',
+    'gpt-5-codex',            datetime(2020-01-01), 1.25, 0.125, 10.0, 'retail',
+    'gpt-chat-latest',        datetime(2020-01-01), 5.0,  0.5,   30.0, 'retail',
+    'grok-4',                 datetime(2020-01-01), 3.0,  3.0,   15.0, 'retail',
+    'text-embedding-3-small', datetime(2020-01-01), 0.02, 0.02,   0.0, 'retail'
+]

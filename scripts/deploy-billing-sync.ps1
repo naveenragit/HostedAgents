@@ -143,7 +143,9 @@ function Invoke-Arm {
 function Write-JsonBody {
     param([Parameter(Mandatory)][hashtable]$Body, [Parameter(Mandatory)][string]$Label)
     $path = Join-Path ([System.IO.Path]::GetTempPath()) "billing-sync-$Label.json"
-    ($Body | ConvertTo-Json -Depth 12 -Compress) | Set-Content -Path $path -Encoding utf8 -NoNewline
+    # -WhatIf:$false because a request body in the temp directory is not the
+    # mutation being previewed; suppressing it here keeps a dry run readable.
+    ($Body | ConvertTo-Json -Depth 12 -Compress) | Set-Content -Path $path -Encoding utf8 -NoNewline -WhatIf:$false
     return $path
 }
 
@@ -196,10 +198,15 @@ $dcePath = Write-JsonBody -Label 'dce' -Body @{
     location   = $Location
     properties = @{ networkAcls = @{ publicNetworkAccess = 'Enabled' } }
 }
-$dce = Invoke-Arm -Method put -Url "https://management.azure.com$dceId" -ApiVersion '2023-03-11' -BodyPath $dcePath | ConvertFrom-Json
-$dceEndpoint = $dce.properties.logsIngestion.endpoint
+# Placeholders so a dry run can still print the job it would create. Every value
+# below is only ever read by a call that is itself behind ShouldProcess.
+$dceEndpoint = '<dce-logs-ingestion-endpoint>'
+if ($PSCmdlet.ShouldProcess($dceName, 'Create data collection endpoint')) {
+    $dce = Invoke-Arm -Method put -Url "https://management.azure.com$dceId" -ApiVersion '2023-03-11' -BodyPath $dcePath | ConvertFrom-Json
+    $dceEndpoint = $dce.properties.logsIngestion.endpoint
+    Write-Host "    $dceName" -ForegroundColor DarkGray
+}
 Remove-Item $dcePath -ErrorAction SilentlyContinue
-Write-Host "    $dceName" -ForegroundColor DarkGray
 
 # transformKql is required even as a passthrough; without it the stream has no
 # declared destination mapping and every upload is accepted then dropped.
@@ -221,20 +228,28 @@ $dcrPath = Write-JsonBody -Label 'dcr' -Body @{
         )
     }
 }
-$dcr = Invoke-Arm -Method put -Url "https://management.azure.com$dcrId" -ApiVersion '2023-03-11' -BodyPath $dcrPath | ConvertFrom-Json
-$dcrImmutableId = $dcr.properties.immutableId
+$dcrImmutableId = '<dcr-immutable-id>'
+if ($PSCmdlet.ShouldProcess($dcrName, 'Create data collection rule')) {
+    $dcr = Invoke-Arm -Method put -Url "https://management.azure.com$dcrId" -ApiVersion '2023-03-11' -BodyPath $dcrPath | ConvertFrom-Json
+    $dcrImmutableId = $dcr.properties.immutableId
+    Write-Host "    $dcrName (immutableId $dcrImmutableId)" -ForegroundColor DarkGray
+}
 Remove-Item $dcrPath -ErrorAction SilentlyContinue
-Write-Host "    $dcrName (immutableId $dcrImmutableId)" -ForegroundColor DarkGray
 
 # --- 3. Identity and roles --------------------------------------------------
 Write-Host '==> Creating managed identity and assigning roles' -ForegroundColor Cyan
 $identityName = "id-$Name"
-$null = az identity create -n $identityName -g $ResourceGroup -l $Location -o none
-if ($LASTEXITCODE -ne 0) { throw "Failed to create managed identity $identityName" }
-$identityId = az identity show -n $identityName -g $ResourceGroup --query id -o tsv
-$identityPrincipalId = az identity show -n $identityName -g $ResourceGroup --query principalId -o tsv
-$identityClientId = az identity show -n $identityName -g $ResourceGroup --query clientId -o tsv
-Write-Host "    $identityName" -ForegroundColor DarkGray
+$identityId = '<identity-resource-id>'
+$identityClientId = '<identity-client-id>'
+$identityPrincipalId = $null
+if ($PSCmdlet.ShouldProcess($identityName, 'Create user-assigned managed identity')) {
+    $null = az identity create -n $identityName -g $ResourceGroup -l $Location -o none
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create managed identity $identityName" }
+    $identityId = az identity show -n $identityName -g $ResourceGroup --query id -o tsv
+    $identityPrincipalId = az identity show -n $identityName -g $ResourceGroup --query principalId -o tsv
+    $identityClientId = az identity show -n $identityName -g $ResourceGroup --query clientId -o tsv
+    Write-Host "    $identityName" -ForegroundColor DarkGray
+}
 
 # Cost Management Reader is subscription-scoped because usage details are only
 # readable at that scope. It grants read access to cost data and nothing else.
@@ -244,6 +259,7 @@ $assignments = @(
     @{ Role = 'AcrPull'; Scope = $registryId }
 )
 foreach ($assignment in $assignments) {
+    if (-not $PSCmdlet.ShouldProcess($assignment.Scope, "Assign '$($assignment.Role)' to $identityName")) { continue }
     # Role assignment is eventually consistent against a freshly created
     # principal, so a transient failure here is retried rather than fatal.
     $assigned = $false
@@ -266,18 +282,18 @@ foreach ($assignment in $assignments) {
 # place, because the meter map copied alongside the source would otherwise
 # shadow the canonical file for local runs and tests.
 Write-Host '==> Building image in ACR' -ForegroundColor Cyan
-$context = Join-Path ([System.IO.Path]::GetTempPath()) "billing-sync-context-$Name"
-if (Test-Path $context) { Remove-Item $context -Recurse -Force }
-$null = New-Item -ItemType Directory -Path $context
-Copy-Item -Path (Join-Path $sourceRoot '*') -Destination $context -Recurse -Force
-Get-ChildItem -Path $context -Recurse -Force -Directory |
-    Where-Object { $_.Name -in @('__pycache__', '.venv') } |
-    Remove-Item -Recurse -Force
-Copy-Item -Path $meterMapSource -Destination (Join-Path $context 'billing_sync\model-meter-map.json') -Force
-
 $imageTag = "billing-sync:$(Get-Date -Format 'yyyyMMddHHmmss')"
 $image = "$registryServer/$imageTag"
 if ($PSCmdlet.ShouldProcess($image, 'Build image')) {
+    $context = Join-Path ([System.IO.Path]::GetTempPath()) "billing-sync-context-$Name"
+    if (Test-Path $context) { Remove-Item $context -Recurse -Force }
+    $null = New-Item -ItemType Directory -Path $context
+    Copy-Item -Path (Join-Path $sourceRoot '*') -Destination $context -Recurse -Force
+    Get-ChildItem -Path $context -Recurse -Force -Directory |
+        Where-Object { $_.Name -in @('__pycache__', '.venv') } |
+        Remove-Item -Recurse -Force
+    Copy-Item -Path $meterMapSource -Destination (Join-Path $context 'billing_sync\model-meter-map.json') -Force
+
     az acr build --registry $RegistryName --resource-group $RegistryResourceGroup `
         --image $imageTag --platform linux/amd64 $context
 
@@ -293,19 +309,19 @@ if ($PSCmdlet.ShouldProcess($image, 'Build image')) {
         if ($found -and [int]$found -gt 0) { $published = $true; break }
         Start-Sleep -Seconds 10
     }
+    Remove-Item $context -Recurse -Force -ErrorAction SilentlyContinue
     if (-not $published) {
         $failedRun = az acr task list-runs -r $RegistryName --top 1 --query '[0].runId' -o tsv 2>$null
         throw "ACR build did not publish $imageTag. Inspect the log with: az acr task logs -r $RegistryName --run-id $failedRun"
     }
     Write-Host "    $image" -ForegroundColor DarkGray
 }
-Remove-Item $context -Recurse -Force -ErrorAction SilentlyContinue
 
 # --- 5. Container Apps environment and job ----------------------------------
 Write-Host '==> Creating Container Apps environment' -ForegroundColor Cyan
 $envName = "cae-$Name"
 $existingEnv = az containerapp env show -n $envName -g $ResourceGroup --query id -o tsv 2>$null
-if (-not $existingEnv) {
+if (-not $existingEnv -and $PSCmdlet.ShouldProcess($envName, 'Create Container Apps environment')) {
     # Console output goes to the same workspace as the report. Without a logs
     # destination a failed run leaves no diagnosable trace at all.
     $workspaceCustomerId = az monitor log-analytics workspace show `

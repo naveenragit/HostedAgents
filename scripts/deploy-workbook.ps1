@@ -88,16 +88,20 @@ $catalog = @(
         Template    = Join-Path $observability 'hosted-agents-workbook.json'
         Id          = 'a7f3c1d2-9b64-4e8a-8c17-6f2d5b0e91aa'
         DisplayName = 'Token Consumption from APIM logs and Billing'
-        Functions   = @('HostedAgentModelUsage', 'HostedAgentTokenCategories')
+        Functions   = @('ModelRates', 'HostedAgentModelUsage', 'HostedAgentTokenCategories')
     }
     [pscustomobject]@{
         Key         = 'foundry'
         Template    = Join-Path $observability 'foundry-cost-workbook.json'
         Id          = 'b4e91d67-2a38-4c05-9f1e-7d3a86b2c410'
         DisplayName = 'Token Consumption from Foundry Tracing and Billing'
-        Functions   = @('FoundryAgentUsage', 'FoundryBilledCost', 'FoundryAgentCost')
+        Functions   = @('ModelRates', 'FoundryAgentUsage', 'FoundryBilledCost', 'FoundryAgentCost')
     }
 )
+
+# `ModelRates` is the one rate card every pricing function reads, so both
+# workbooks claim it and it is written before anything that calls it.
+$shared = @('ModelRates')
 
 $selected = @($catalog | Where-Object { $Workbook -eq 'all' -or $_.Key -eq $Workbook })
 if ($WorkbookId) {
@@ -155,7 +159,8 @@ Write-Host '==> Deploying saved functions' -ForegroundColor Cyan
 # would let `-Workbook foundry` silently overwrite the API Management functions
 # with whatever this checkout happens to contain.
 $wanted = @($selected | ForEach-Object { $_.Functions } | Sort-Object -Unique)
-$available = @(Get-ChildItem -Path $functionsPath -Filter '*.kql' | Sort-Object Name)
+$available = @(Get-ChildItem -Path $functionsPath -Filter '*.kql' |
+        Sort-Object @{ Expression = { $shared -notcontains [System.IO.Path]::GetFileNameWithoutExtension($_.Name) } }, Name)
 
 $orphans = @($available |
         Where-Object { $catalog.Functions -notcontains [System.IO.Path]::GetFileNameWithoutExtension($_.Name) } |

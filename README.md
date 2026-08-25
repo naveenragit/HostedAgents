@@ -101,7 +101,7 @@ How it holds together:
 | Authentication | Entra **passthrough**. The agent presents its own token and the gateway forwards it, so the gateway holds no standing access to the models and cannot be used to escalate. Each agent identity needs a data-plane role on the Foundry account. |
 | Attribution | The agent sends `x-user-key`, taken from the platform identity in the hosted request context, and `x-agent-name`. The key is never caller-supplied, so it cannot be spoofed. |
 | Bounds | Attribution keys become Azure Monitor metric dimensions, so they are validated for charset and length before being sent. |
-| Privacy | Prompts and completions are never logged. `ENABLE_SENSITIVE_DATA=false` is pinned on both agents because the hosted runtime enables it by default. |
+| Privacy | Prompts and completions are never logged. Both `ENABLE_SENSITIVE_DATA=false` and `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` are pinned on both agents: the first is the Agent Framework switch, the second is what the hosted runtime's own gen_ai instrumentation reads, and it captures message content by default. |
 
 The diagram above is [Mermaid](https://mermaid.js.org/), rendered inline by GitHub. The
 application-tier view is the block at the top of this file, and the design rationale behind both is

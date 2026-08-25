@@ -50,9 +50,13 @@ Cost Management ──► billing-sync job ──► DCE ──► DCR ──►
 
 | Function | Returns |
 | --- | --- |
+| `ModelRates` | the one effective-dated rate card, read by every function that prices a token |
 | `FoundryAgentUsage` | one row per model call: tokens, user, agent, model, cost |
 | `FoundryBilledCost` | what Azure billed, per meter per day, de-duplicated |
 | `FoundryAgentCost` | allocated vs billed per model per day, with a status verdict |
+
+`ModelRates` is claimed by both workbooks and deployed with either one, so a rate
+refresh cannot reach one report and miss the other.
 
 ---
 
@@ -308,16 +312,16 @@ Two files need an entry, or that model's spend is misreported:
    job logs a warning naming the meter. After adding it, re-run
    `deploy-billing-sync.ps1` to rebuild the image.
 
-2. **The rate card inside [`FoundryAgentUsage.kql`](functions/FoundryAgentUsage.kql)** —
-   an effective-dated `rates` datatable near the top of the file. Regenerate rows
-   from what Azure actually billed:
+2. **The rate card in [`ModelRates.kql`](functions/ModelRates.kql)** — a single
+   effective-dated `rates` datatable that every pricing function reads, in both
+   reports. Regenerate rows from what Azure actually billed:
 
    ```powershell
    .\scripts\sync-model-prices.ps1 -AccountName <foundry-account>
    ```
 
-   The script prints KQL rows but writes nothing. Paste them by hand into the
-   `rates` datatable, then redeploy with:
+   The script prints KQL rows but writes nothing. Paste them by hand into
+   `ModelRates.kql`, then redeploy with:
 
    ```powershell
    .\scripts\deploy-workbook.ps1 -ResourceGroup <rg> -WorkspaceName <ws> `
@@ -328,9 +332,10 @@ Two files need an entry, or that model's spend is misreported:
    row silently re-prices history, which is the failure this design exists to
    prevent.
 
-   The API Management report's `HostedAgentModelUsage` has a `rates` datatable of
-   the same shape. The script's output is valid for both, and it names both, so
-   update whichever reports you actually use.
+   This used to be three separate copies of the rate card, one per pricing
+   function. They drifted: the token-category copy had no effective dates at all
+   and the refresh instructions named only two of the three, so cache-adjusted
+   cost kept pricing on stale numbers without reporting anything wrong.
 
 ### Reading the reconciliation status
 

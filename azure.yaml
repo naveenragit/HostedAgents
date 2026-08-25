@@ -60,9 +60,16 @@ services:
       - name: APP_MODEL_GATEWAY_URL
         value: ${APP_MODEL_GATEWAY_URL}
       # Keeps prompts, completions, function arguments and system instructions OUT of
-      # Application Insights. The hosted runtime turns this on by default; the repo's
-      # telemetry contract is metadata only, so it is pinned off explicitly.
+      # Application Insights. The repo's telemetry contract is metadata only.
+      #
+      # BOTH variables are required. ENABLE_SENSITIVE_DATA is the Agent Framework
+      # switch; the Foundry hosted runtime instruments gen_ai itself and reads the
+      # OpenTelemetry variable instead, defaulting content capture ON. Setting only
+      # the first was verified to still export full prompts and completions into
+      # AppDependencies, so the contract was unenforced.
       - name: ENABLE_SENSITIVE_DATA
+        value: "false"
+      - name: OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
         value: "false"
       - name: APP_LOG_LEVEL
         value: INFO
@@ -109,9 +116,16 @@ services:
       - name: APP_MODEL_GATEWAY_URL
         value: ${APP_MODEL_GATEWAY_URL}
       # Keeps prompts, completions, function arguments and system instructions OUT of
-      # Application Insights. The hosted runtime turns this on by default; the repo's
-      # telemetry contract is metadata only, so it is pinned off explicitly.
+      # Application Insights. The repo's telemetry contract is metadata only.
+      #
+      # BOTH variables are required. ENABLE_SENSITIVE_DATA is the Agent Framework
+      # switch; the Foundry hosted runtime instruments gen_ai itself and reads the
+      # OpenTelemetry variable instead, defaulting content capture ON. Setting only
+      # the first was verified to still export full prompts and completions into
+      # AppDependencies, so the contract was unenforced.
       - name: ENABLE_SENSITIVE_DATA
+        value: "false"
+      - name: OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
         value: "false"
       - name: APP_LOG_LEVEL
         value: INFO
