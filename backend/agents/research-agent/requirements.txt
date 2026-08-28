@@ -7,7 +7,7 @@
 #
 # Audit with `pip-audit` via scripts/check.ps1 before every deploy.
 
-azure-ai-agentserver-responses==2.0.0b1
+azure-ai-agentserver-responses==2.1.0b2
 # Pinning the adapter alone does not pin the runtime: it declares
 # `azure-ai-agentserver-core>=2.0.0b10`, an open-ended lower bound that pip
 # resolves to prereleases. A rebuild silently picked up core 2.1.0b2, whose
