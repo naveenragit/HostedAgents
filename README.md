@@ -438,8 +438,8 @@ frontend/src/api/client.ts          typed fetch wrapper
 frontend/src/hooks/useChat.ts       chat state, request cancellation
 frontend/src/components/            ConversationList, MessageList, MessageComposer, ErrorBanner
 
-observability/hosted-agents-workbook.json   workbook definition, resource IDs parameterised
-observability/functions/*.kql               saved Log Analytics functions the workbook depends on
+observability/*.json                        workbook definitions, resource IDs parameterised
+observability/functions/*.kql               saved Log Analytics functions the workbooks depend on
 ```
 
 > ⚠️ **Do not add a shared package under `backend/agents/`.** Code deploy zips **only** the service

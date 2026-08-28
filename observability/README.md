@@ -6,8 +6,8 @@ run side by side.
 
 | Workbook | Template | Source | Covers |
 | --- | --- | --- | --- |
-| **Token Consumption from Foundry Tracing and Billing** | `foundry-cost-workbook.json` | Foundry tracing + Azure billing | Every agent in the project |
-| Token Consumption from APIM logs and Billing | `hosted-agents-workbook.json` | API Management AI gateway | Only traffic routed through the gateway |
+| **Token Consumption from Foundry Tracing and Billing** | `Token Consumption from Foundry Tracing and Billing.json` | Foundry tracing + Azure billing | Every agent in the project |
+| Token Consumption from APIM logs and Billing | `Token Consumption from APIM logs and Billing.json` | API Management AI gateway | Only traffic routed through the gateway |
 
 **This guide covers the Foundry one.** It reads no API Management data, so it works
 whether or not a gateway is provisioned.
