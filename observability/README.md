@@ -10,7 +10,7 @@ run side by side.
 | Token Consumption from APIM logs and Billing | `Token Consumption from APIM logs and Billing.json` | API Management AI gateway | Only traffic routed through the gateway |
 
 **This guide covers the Foundry one.** It reads no API Management data, so it works
-whether or not a gateway is provisioned.
+whether or not a gateway is provisioned. §8 is a field reference for **both**.
 
 ---
 
@@ -394,3 +394,147 @@ crashes the same way.
 - **It does not claim to be an invoice.** `BilledUsd` is the only real money in the
   report; everything else is allocation, and the reconciliation panel says how far
   the two diverge.
+
+---
+
+## 8. Field reference
+
+Every field each report exposes, and where the value actually comes from. Fields
+marked *derived* are computed in the saved function and exist in no source table.
+
+`ModelRates` is read by both reports, so its columns appear in both tables:
+
+| Field | What it is | Source |
+| --- | --- | --- |
+| `ModelName` | rate lookup key, bare deployment name | hand-maintained in `functions/ModelRates.kql` |
+| `ValidFrom` | first day the rate applies | as above — effective-dated, append-only |
+| `InputUsdPerMTok` | USD per 1M input tokens | `scripts\sync-model-prices.ps1`, from Cost Management `effectivePrice` |
+| `CachedInputUsdPerMTok` | USD per 1M cached input tokens | as above |
+| `OutputUsdPerMTok` | USD per 1M output tokens | as above |
+| `RateSource` | `billed` / `mixed` / `retail` | as above — provenance of the three rates |
+
+### 8.1 Token Consumption from APIM logs and Billing
+
+Money here is a **rate**, not an invoice: the gateway supplies quantities and
+`ModelRates` supplies the billed unit price. There is no billed-total
+reconciliation on this side.
+
+**`HostedAgentModelUsage`** — one row per gateway request.
+
+| Field | What it is | Source |
+| --- | --- | --- |
+| `TimeGenerated` | request timestamp | `ApiManagementGatewayLlmLog` |
+| `UserKey` | **user identity**; `unattributed` when the header is absent | `ApiManagementGatewayLogs.RequestHeaders['x-user-key']`, joined on `CorrelationId` |
+| `AgentName` | **calling agent**; `unknown` when absent | `ApiManagementGatewayLogs.RequestHeaders['x-agent-name']` |
+| `ModelName` | model, and the rate key | `ApiManagementGatewayLlmLog.ModelName` |
+| `DeploymentName` | Foundry deployment behind the gateway | `ApiManagementGatewayLlmLog` |
+| `Region` | serving region | `ApiManagementGatewayLlmLog` |
+| `PromptTokens` | **input tokens** | `ApiManagementGatewayLlmLog` |
+| `CompletionTokens` | **output tokens** | `ApiManagementGatewayLlmLog` |
+| `TotalTokens` | prompt + completion | `ApiManagementGatewayLlmLog` |
+| `EstimatedCostUsd` | **token cost** | *derived*: `(PromptTokens × InputUsdPerMTok + CompletionTokens × OutputUsdPerMTok) / 1e6` |
+| `PriceKnown` | whether a rate was in effect for this request | *derived* from the `ModelRates` join |
+| `RateSource` | rate provenance, or `unpriced` | `ModelRates.RateSource` |
+| `RateValidFrom` | effective date of the rate applied | `ModelRates.ValidFrom` |
+| `IsStreamCompletion` | streamed response | `ApiManagementGatewayLlmLog` |
+| `CorrelationId` | **join key** between the two gateway tables | both gateway tables |
+| `RequestId` | gateway request id | `ApiManagementGatewayLlmLog` |
+| `OperationId` | APIM operation | `ApiManagementGatewayLogs` |
+| `ResponseCode` / `IsRequestSuccess` | outcome | `ApiManagementGatewayLogs` |
+| `TotalTime` / `BackendTime` | latency in ms, end-to-end and backend-only | `ApiManagementGatewayLogs` |
+
+**`HostedAgentTokenCategories`** — 5-minute buckets per user, agent and model.
+Cached and reasoning tokens exist **only** here; `ApiManagementGatewayLlmLog` has
+no column for either.
+
+| Field | What it is | Source |
+| --- | --- | --- |
+| `TimeGenerated` | 5-minute bucket | `AppMetrics`, `bin(…, 5m)` |
+| `UserKey` | user identity | `AppMetrics.Properties['UserKey']` |
+| `AgentName` | calling agent | `AppMetrics.Properties['AgentName']` |
+| `ModelName` | model, and the rate key | `AppMetrics.Properties['ModelName']` |
+| `PromptTokens` | input tokens | `AppMetrics` metric `Prompt Tokens` |
+| `CachedPromptTokens` | input tokens served from cache | `AppMetrics` metric `Prompt Cached Tokens` |
+| `BillableInputTokens` | input charged at full rate | *derived*: `PromptTokens − CachedPromptTokens` |
+| `CompletionTokens` | output tokens | `AppMetrics` metric `Completion Tokens` |
+| `ReasoningTokens` | output tokens never shown to the user | `AppMetrics` metric `Completion Reasoning Tokens` |
+| `TotalTokens` | prompt + completion | *derived* |
+| `CacheAdjustedCostUsd` | **token cost with the cache discount applied** | *derived* from `ModelRates` |
+| `CacheSavingsUsd` | what caching avoided | *derived*: `CachedPromptTokens × (Input − CachedInput) / 1e6` |
+| `PriceKnown` / `RateSource` | pricing confidence | `ModelRates` |
+
+All four metrics are emitted by the gateway's `emit-token-metric` policy on API
+`hosted-agents-models`; the user, agent and model dimensions are policy-supplied,
+so a request that skips the policy is invisible to these panels.
+
+### 8.2 Token Consumption from Foundry Tracing and Billing
+
+**`FoundryAgentUsage`** — one row per model call. `AppDependencies` carries the
+tokens but no user; `AppTraces` carries the user but no tokens; they are joined on
+`OperationId`. Span attributes are read out of the `Properties` JSON column.
+
+| Field | What it is | Source |
+| --- | --- | --- |
+| `TimeGenerated` | model-call timestamp | `AppDependencies` |
+| `UserId` | **user identity**; `unattributed` when no log record carried it | `AppTraces.Properties['user.id']`, joined on `OperationId` |
+| `AgentName` | **agent name**, falling back to the role name | `AppDependencies.Properties['gen_ai.agent.name']` ?? `AppRoleName` |
+| `AgentVersion` | deployed agent version | `gen_ai.agent.version` |
+| `ModelName` | rate key — deployment with any `-YYYY-MM-DD` suffix stripped | *derived* from `ModelDeployment` |
+| `ModelDeployment` | model requested | `gen_ai.request.model` |
+| `ModelVersion` | model that actually answered | `gen_ai.response.model` |
+| `InputTokens` | **input tokens** (includes the cached ones) | `gen_ai.usage.input_tokens` |
+| `CachedInputTokens` | input tokens served from cache | `gen_ai.usage.cache_read.input_tokens` |
+| `BillableInputTokens` | input charged at full rate | *derived*: `InputTokens − CachedInputTokens` |
+| `OutputTokens` | **output tokens** (includes reasoning) | `gen_ai.usage.output_tokens` |
+| `ReasoningTokens` | output tokens never shown to the user | `gen_ai.usage.reasoning.output_tokens` |
+| `TotalTokens` | input + output | *derived* |
+| `EstimatedCostUsd` | **token cost**, cache-adjusted | *derived* from `ModelRates` |
+| `CacheSavingsUsd` | what caching avoided | *derived* |
+| `RateSource` | rate provenance, or `unpriced` | `ModelRates.RateSource` |
+| `PriceKnown` | whether a rate was in effect | *derived* from the `ModelRates` join |
+| `Success` / `DurationMs` | outcome and latency | `AppDependencies` |
+| `OperationId` | trace id — **join key** to the user | `AppDependencies` / `AppTraces` |
+| `SpanId` | the model-call span | `AppDependencies.Id` |
+| `SessionId` | conversation | `microsoft.session.id` |
+| `ResponseId` | provider response id | `gen_ai.response.id` |
+
+The wrapper `invoke_agent` span is dropped; it repeats the same usage as the
+`chat <model>` span and counting both doubles tokens for Agent-Framework agents.
+
+**`FoundryBilledCost`** — what Azure actually charged, per meter per day. Written
+by the billing-sync job from `Microsoft.Consumption/usageDetails` into
+`FoundryBilledCost_CL`, then de-duplicated to the latest ingestion per
+meter-day-resource.
+
+| Field | What it is | Source |
+| --- | --- | --- |
+| `UsageDate` | billing day | usage detail `date` |
+| `ModelName` | **cost mapping** — meter resolved to a model | `model-meter-map.json`, `unmapped` when no rule matches |
+| `Meter` | billed meter name | usage detail `meterName` |
+| `Direction` | `input` / `cachedInput` / `output` for that meter | `model-meter-map.json` |
+| `RateTier` | rate variant of the same deployment — `standard`, `longContext` | `model-meter-map.json` |
+| `BilledCostUsd` | **real money**, summed per meter-day-resource | usage detail `costInUSD` |
+| `BilledTokens` | quantity converted to tokens (`1K`/`1M` units) | usage detail `quantity` × `unitOfMeasure` |
+| `EffectivePriceUsd` | unit price actually charged; feeds the rate card | usage detail `effectivePrice` |
+| `UnitOfMeasure` | pricing unit | usage detail `unitOfMeasure` |
+| `ResourceName` | Foundry account | usage detail `instanceName`, last segment |
+| `SubscriptionId` | subscription billed | job setting `BILLING_SUBSCRIPTION_ID` |
+| `IngestedAt` | when the job wrote the row | `TimeGenerated` of the winning ingestion |
+
+Cost Management has **no user dimension**, which is the whole reason the per-user
+split comes from telemetry and only the total comes from billing.
+
+**`FoundryAgentCost`** — the reconciliation between the two, per model per day.
+
+| Field | What it is | Source |
+| --- | --- | --- |
+| `UsageDate` / `ModelName` | the grain both sides share | both |
+| `Status` | verdict — see §5 | *derived* |
+| `Requests` / `Users` / `Unattributed` / `Unpriced` | traced volume and its gaps | `FoundryAgentUsage` |
+| `TracedTokens` | tokens seen in telemetry | `FoundryAgentUsage.TotalTokens` |
+| `BilledTokens` | tokens Azure charged for | `FoundryBilledCost` |
+| `AllocatedUsd` | telemetry-derived cost | `FoundryAgentUsage.EstimatedCostUsd` |
+| `BilledUsd` | invoiced cost | `FoundryBilledCost.BilledCostUsd` |
+| `DeltaUsd` | `AllocatedUsd − BilledUsd` | *derived* |
+| `Factor` | multiplier that makes allocation tie out to the invoice | *derived*: `BilledUsd / AllocatedUsd` |
+
