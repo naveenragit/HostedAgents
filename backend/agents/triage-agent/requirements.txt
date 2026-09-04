@@ -9,7 +9,7 @@
 # Audit with `pip-audit` via scripts/check.ps1 before every deploy.
 
 agent-framework-foundry>=1.10.4,<2.0.0
-agent-framework-foundry-hosting==1.0.0b260730
+agent-framework-foundry-hosting==1.0.0b260827
 azure-identity>=1.25.3,<2.0.0
 # Imported directly to build the API Management gateway client, so it is declared
 # here rather than relied on as an agent-framework transitive dependency.
