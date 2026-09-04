@@ -13,5 +13,5 @@ agent-framework-foundry-hosting==1.0.0b260730
 azure-identity>=1.25.3,<2.0.0
 # Imported directly to build the API Management gateway client, so it is declared
 # here rather than relied on as an agent-framework transitive dependency.
-openai>=1.109.1,<3.0.0
+openai>=3.6.0,<4.0.0
 python-dotenv>=1.2.2,<2.0.0
