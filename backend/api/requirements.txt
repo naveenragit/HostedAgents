@@ -14,7 +14,7 @@ pydantic>=2.13.4,<3.0.0
 pymongo>=4.17.0,<5.0.0
 
 # Foundry hosted-agent invocation.
-azure-ai-projects>=2.4.0,<3.0.0
+azure-ai-projects>=2.6.0,<3.0.0
 azure-identity>=1.25.3,<2.0.0
 
 python-dotenv>=1.2.2,<2.0.0
