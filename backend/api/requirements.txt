@@ -11,7 +11,7 @@ pydantic>=2.13.4,<3.0.0
 # Azure Cosmos DB for MongoDB (vCore) speaks the MongoDB wire protocol, so this
 # uses PyMongo — NOT azure-cosmos, which only talks to Cosmos DB for NoSQL.
 # 4.13+ provides the native AsyncMongoClient (Motor is deprecated).
-pymongo>=4.17.0,<5.0.0
+pymongo>=4.18.0,<5.0.0
 
 # Foundry hosted-agent invocation.
 azure-ai-projects>=2.4.0,<3.0.0
