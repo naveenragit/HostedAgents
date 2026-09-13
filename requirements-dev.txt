@@ -10,7 +10,7 @@ mypy==1.18.2
 pytest==9.0.3
 pytest-asyncio==1.4.0
 httpx>=0.28.1,<1.0.0
-pip-audit==2.9.0
+pip-audit==2.10.1
 python-dotenv>=1.2.2,<2.0.0
 # Exception to the rule above: the research agent's telemetry module imports the
 # OpenTelemetry API to record token-usage spans, and its tests import that
