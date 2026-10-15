@@ -6,7 +6,7 @@
 # runs `pip-audit --strict` over this file, so a vulnerable pin fails the gate.
 
 ruff==0.14.2
-mypy==1.18.2
+mypy==2.3.1
 pytest==9.0.3
 pytest-asyncio==1.4.0
 httpx>=0.28.1,<1.0.0
